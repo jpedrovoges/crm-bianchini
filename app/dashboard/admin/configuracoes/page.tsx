@@ -27,8 +27,7 @@ type ConfigDentista = {
   id?: string
   dentista_id: string
   tipo_conta: 'pessoal' | 'empresa'
-  valor_minimo: number
-  repasse_marco: number
+  participa_rateio: boolean
 }
 
 function fmt(v: number) {
@@ -118,8 +117,7 @@ export default function ConfiguracoesPage() {
     return configsDent[dentistaId] ?? {
       dentista_id: dentistaId,
       tipo_conta: 'pessoal',
-      valor_minimo: 4000,
-      repasse_marco: 0,
+      participa_rateio: true,
     }
   }
 
@@ -129,8 +127,7 @@ export default function ConfiguracoesPage() {
     await supabase.from('configuracoes_dentistas').upsert({
       dentista_id: dentistaId,
       tipo_conta: conf.tipo_conta,
-      valor_minimo: conf.valor_minimo,
-      repasse_marco: conf.repasse_marco,
+      participa_rateio: conf.participa_rateio,
     })
     setSalvandoDentId(null)
     setOkDentId(dentistaId)
@@ -332,8 +329,7 @@ export default function ConfiguracoesPage() {
           <div className="card-p6">
             <h2 className="widget-title">Configurações por Dentista</h2>
             <p className="text-xs mb-6" style={{ color: 'var(--text-3)' }}>
-              Tipo de conta define onde o pagamento é depositado.
-              O valor mínimo é garantido mesmo que o cálculo de rateio seja menor.
+              Dentistas com rateio ativo enviam 13% de comissão para Marco Bianchini ao fechar o mês.
             </p>
             {dentistas.length === 0 ? (
               <p className="empty-text">Nenhum dentista cadastrado</p>
@@ -356,16 +352,20 @@ export default function ConfiguracoesPage() {
                           </select>
                         </div>
                         <div>
-                          <label className="form-label">Comissão Marco Bianchini (%)</label>
-                          <input type="number" min={0} max={100} step={0.1}
-                            value={conf.repasse_marco}
-                            onChange={e => updateConfDentista(d.id, { repasse_marco: parseFloat(e.target.value) || 0 })}
-                            className="form-input"
-                            placeholder="13.0"
-                          />
-                          <p className="text-xs mt-1" style={{ color: 'var(--text-3)' }}>
-                            Calculado sobre (Valor − Impostos) por lançamento
-                          </p>
+                          <label className="form-label">Rateio (comissão Marco Bianchini)</label>
+                          <div className="flex gap-2 mt-1">
+                            {([true, false] as const).map(v => (
+                              <button key={String(v)}
+                                onClick={() => updateConfDentista(d.id, { participa_rateio: v })}
+                                className={`flex-1 py-2 text-xs rounded-lg border transition-colors ${conf.participa_rateio === v
+                                  ? (v
+                                    ? 'bg-emerald-950/40 border-emerald-800/60 text-emerald-400 font-medium'
+                                    : 'bg-[var(--surface-muted)] border-[var(--border-hover)] text-[var(--text-2)] font-medium')
+                                  : 'border-[var(--border)] text-[var(--text-3)]'}`}>
+                                {v ? 'Ativo (13%)' : 'Sem rateio'}
+                              </button>
+                            ))}
+                          </div>
                         </div>
                       </div>
                       <div className="flex items-center gap-3">
