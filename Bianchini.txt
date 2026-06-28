@@ -1,0 +1,19 @@
+pagina login/senha
+
+ver movimentação diária (ex Pasta Movimento) - feito em partes, separar por entrada e saída?
+
+Aba Pacientes (dados da planilha Pacientes NF (importante se der pra importar de outra planilha/PRODENT))
+
+planilhas movimento mensal dentro da aplicação (financeiro)
+
+conseguir separar dentro da movimentação diária o que é preciso nota fiscal e o que não - feito 
+enviar um relatório diário com todos os movimentos para Neia
+
+calculo de pacientes que possuem participação em cirurgia do marco
+
+modo claro e modo escuro
+
+no lançamento, ter duas escolhas entre venda de produto e venda do procedimento, onde a venda do produto não tem NF - feito 
+
+
+1. Ver saída neia conta azul - lançar BlueM

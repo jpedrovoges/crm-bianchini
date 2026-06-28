@@ -1,0 +1,266 @@
+@import "tailwindcss";
+
+/* ── Tokens dark (padrão) ── */
+:root {
+  --bg:            #111111;
+  --surface:       #1c1c1e;
+  --surface-muted: #232325;
+  --sidebar-bg:    #161618;
+
+  --border:        #2a2a2c;
+  --border-hover:  #3c3c3e;
+
+  --text-1: #f4f4f5;
+  --text-2: #a1a1aa;
+  --text-3: #52525b;
+
+  --accent:       #10b981;
+  --accent-hover: #059669;
+  --accent-soft:  rgba(16, 185, 129, 0.14);
+
+  --receita: #34d399;
+  --despesa: #f87171;
+}
+
+/* ── Tokens light ── */
+html.light {
+  --bg:            #f4f4f5;
+  --surface:       #ffffff;
+  --surface-muted: #f0f0f1;
+  --sidebar-bg:    #e8e8ea;
+
+  --border:        #d4d4d8;
+  --border-hover:  #a1a1aa;
+
+  --text-1: #18181b;
+  --text-2: #52525b;
+  --text-3: #a1a1aa;
+
+  --accent:       #059669;
+  --accent-hover: #047857;
+  --accent-soft:  rgba(5, 150, 105, 0.12);
+
+  --receita: #059669;
+  --despesa: #dc2626;
+}
+
+/* ── Base ── */
+@layer base {
+  html {
+    color-scheme: dark;
+  }
+  html.light {
+    color-scheme: light;
+  }
+  body {
+    background-color: var(--bg);
+    color: var(--text-1);
+  }
+  * {
+    border-color: var(--border);
+  }
+}
+
+/* ── Components ── */
+@layer components {
+
+  /* Layout */
+  .layout-wrapper { @apply flex min-h-screen; }
+  .layout-main    { @apply flex-1 p-4 min-h-screen pt-20 lg:pt-8 lg:ml-56 lg:p-8; }
+
+  .sidebar {
+    width: 14rem;
+    background-color: var(--sidebar-bg);
+    border-right: 1px solid var(--border);
+    @apply flex flex-col py-6 fixed h-full z-40 transition-transform duration-200 -translate-x-full lg:translate-x-0;
+  }
+  .sidebar-open     { @apply translate-x-0; }
+  .sidebar-overlay  { @apply fixed inset-0 bg-black/50 z-30 lg:hidden; }
+
+  /* Mobile header */
+  .mobile-header {
+    background-color: var(--sidebar-bg);
+    border-bottom: 1px solid var(--border);
+    @apply fixed top-0 left-0 right-0 h-14 flex items-center justify-between px-4 z-30 lg:hidden;
+  }
+
+  .sidebar-brand    { @apply px-5 mb-8; }
+  .sidebar-title    { color: var(--text-1); @apply text-sm font-semibold tracking-tight; }
+  .sidebar-subtitle { color: var(--text-2); @apply text-xs mt-0.5; }
+  .sidebar-nav      { @apply flex flex-col gap-0.5 px-3; }
+
+  /* Nav */
+  .nav-link {
+    color: var(--text-2);
+    @apply flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm transition-colors;
+  }
+  .nav-link:hover {
+    color: var(--text-1);
+    background-color: var(--surface-muted);
+  }
+  .nav-link-active {
+    background-color: var(--surface-muted);
+    color: var(--text-1);
+    border-color: var(--accent);
+    @apply font-medium border-l-2 rounded-l-none;
+  }
+  .nav-icon        { color: var(--text-3); }
+  .nav-icon-active { color: var(--accent); }
+
+  /* Page */
+  .page-header     { @apply mb-8; }
+  .page-header-row { @apply flex items-center justify-between mb-6; }
+  .page-title      { color: var(--text-1); @apply text-xl font-semibold; }
+  .page-subtitle   { color: var(--text-2); @apply text-sm mt-0.5; }
+
+  /* Cards */
+  .card-p5 {
+    background-color: var(--surface);
+    border: 1px solid var(--border);
+    @apply rounded-xl p-5 transition-colors;
+  }
+  .card-p5:hover { border-color: var(--border-hover); }
+
+  .card-p6 {
+    background-color: var(--surface);
+    border: 1px solid var(--border);
+    @apply rounded-xl p-6;
+  }
+
+  .card-label { color: var(--text-2); @apply text-xs mb-2; }
+  .card-value { color: var(--text-1); @apply text-2xl font-semibold; }
+  .card-sub   { color: var(--text-3); @apply text-xs mt-1; }
+
+  /* Buttons */
+  .btn-primary {
+    background-color: var(--accent);
+    @apply text-sm text-white rounded-lg transition-colors disabled:opacity-40 disabled:cursor-not-allowed;
+  }
+  .btn-primary:hover:not(:disabled) { background-color: var(--accent-hover); }
+
+  .btn-secondary {
+    color: var(--text-2);
+    border: 1px solid var(--border);
+    @apply text-sm rounded-lg transition-colors disabled:opacity-40;
+  }
+  .btn-secondary:hover:not(:disabled) { border-color: var(--border-hover); color: var(--text-1); }
+
+  .btn-danger {
+    @apply text-sm text-red-400 rounded-lg transition-colors disabled:opacity-40;
+    border: 1px solid rgba(248, 113, 113, 0.2);
+  }
+  .btn-danger:hover:not(:disabled) { background-color: rgba(248, 113, 113, 0.08); }
+
+  .btn-icon {
+    color: var(--text-2);
+    @apply p-1.5 rounded-lg transition-colors;
+  }
+  .btn-icon:hover { background-color: var(--surface-muted); color: var(--text-1); }
+
+  /* Search */
+  .search-bar {
+    background-color: var(--surface);
+    border: 1px solid var(--border);
+    @apply flex items-center gap-2 rounded-lg px-3 py-2.5 max-w-sm mb-8 transition-colors;
+  }
+  .search-bar:hover { border-color: var(--border-hover); }
+
+  .search-input {
+    color: var(--text-1);
+    @apply text-sm outline-none w-full bg-transparent;
+  }
+  .search-input::placeholder { color: var(--text-3); }
+
+  /* Patient card */
+  .patient-card {
+    background-color: var(--surface);
+    border: 1px solid var(--border);
+    @apply rounded-xl p-4 cursor-pointer transition-all;
+  }
+  .patient-card:hover { border-color: var(--border-hover); @apply shadow-sm; }
+
+  .patient-avatar { @apply w-9 h-9 rounded-full flex items-center justify-center text-xs font-semibold mb-3; }
+  .patient-name   { color: var(--text-1); @apply text-sm font-medium mb-0.5; }
+  .patient-phone  { color: var(--text-2); @apply text-xs; }
+  .patient-email  { color: var(--text-3); @apply text-xs truncate; }
+  .section-letter { color: var(--text-3); @apply text-xs font-semibold uppercase tracking-widest mb-3; }
+
+  /* Modal */
+  .modal-overlay { @apply fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4; }
+  .modal {
+    background-color: var(--surface);
+    border: 1px solid var(--border);
+    @apply rounded-xl p-6 w-full max-w-md shadow-xl max-h-[90vh] overflow-y-auto;
+  }
+  .modal-header { @apply flex items-center justify-between mb-5; }
+  .modal-title  { color: var(--text-1); @apply text-sm font-medium; }
+
+  /* Form */
+  .form-label { color: var(--text-2); @apply text-xs mb-1 block; }
+
+  .form-input, .form-textarea, .form-select {
+    color: var(--text-1);
+    background-color: var(--surface-muted);
+    border: 1px solid var(--border);
+    @apply w-full rounded-lg px-3 py-2 text-sm outline-none transition-colors;
+  }
+  .form-input:focus, .form-textarea:focus, .form-select:focus {
+    border-color: var(--border-hover);
+  }
+  .form-textarea { @apply resize-none; }
+
+  /* Empty state */
+  .empty-state {
+    background-color: var(--surface);
+    border: 1px solid var(--border);
+    @apply rounded-xl p-12 text-center max-w-sm;
+  }
+  .empty-icon {
+    background-color: var(--surface-muted);
+    @apply w-10 h-10 rounded-full flex items-center justify-center mx-auto mb-3;
+  }
+
+  /* Widget */
+  .widget-title { color: var(--text-1); @apply text-sm font-medium mb-4; }
+  .empty-text   { color: var(--text-3); @apply text-xs text-center py-8; }
+
+  /* Calendar */
+  .cal-day {
+    color: var(--text-2);
+    @apply relative text-sm w-full aspect-square flex flex-col items-center justify-center rounded-lg transition-colors;
+  }
+  .cal-day:hover { background-color: var(--surface-muted); }
+  .cal-day-selected { background-color: var(--accent) !important; @apply text-white; }
+  .cal-day-today    { background-color: var(--accent-soft); color: var(--accent); @apply font-medium; }
+  .cal-day-header   { color: var(--text-3); @apply text-center text-xs font-medium py-1; }
+
+  /* Movimento diário */
+  .summary-box   { background-color: var(--surface-muted); @apply rounded-lg p-3; }
+  .summary-label { color: var(--text-2); @apply text-xs mb-1; }
+
+  .movimento-item {
+    border: 1px solid var(--border);
+    @apply flex items-center gap-3 p-3 rounded-lg transition-colors;
+  }
+  .movimento-item:hover { border-color: var(--border-hover); }
+
+  .mov-desc { color: var(--text-1); @apply text-sm truncate; }
+  .mov-meta { color: var(--text-2); @apply text-xs; }
+
+  .dot-receita { @apply w-2 h-2 rounded-full flex-shrink-0 bg-emerald-400; }
+  .dot-despesa { @apply w-2 h-2 rounded-full flex-shrink-0 bg-red-400; }
+
+  .text-receita { color: var(--receita); }
+  .text-despesa { color: var(--despesa); }
+
+  /* Tipo toggle */
+  .tipo-btn {
+    border: 1px solid var(--border);
+    color: var(--text-2);
+    @apply flex-1 py-2 text-sm rounded-lg transition-colors;
+  }
+  .tipo-btn:hover { border-color: var(--border-hover); }
+  .tipo-receita-active { @apply bg-emerald-950/40 border-emerald-800/60 text-emerald-400 font-medium; }
+  .tipo-despesa-active { @apply bg-red-950/30 border-red-900/60 text-red-400 font-medium; }
+
+}
