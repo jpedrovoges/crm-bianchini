@@ -344,32 +344,28 @@ export default function ConfiguracoesPage() {
                   return (
                     <div key={d.id} className="rounded-xl p-4" style={{ border: '1px solid var(--border)' }}>
                       <p className="text-sm font-semibold mb-4" style={{ color: 'var(--text-1)' }}>{d.nome}</p>
-                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-3">
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-3">
                         <div>
                           <label className="form-label">Conta de recebimento</label>
                           <select
                             value={conf.tipo_conta}
                             onChange={e => updateConfDentista(d.id, { tipo_conta: e.target.value as 'pessoal' | 'empresa' })}
                             className="form-select">
-                            <option value="pessoal">Conta Pessoal</option>
-                            <option value="empresa">Conta Empresa</option>
+                            <option value="pessoal">Conta Pessoal (PF)</option>
+                            <option value="empresa">Conta Empresa (PJ)</option>
                           </select>
                         </div>
                         <div>
-                          <label className="form-label">Pagamento mínimo (R$)</label>
-                          <input type="number" min={0} step={100}
-                            value={conf.valor_minimo}
-                            onChange={e => updateConfDentista(d.id, { valor_minimo: parseFloat(e.target.value) || 0 })}
-                            className="form-input" />
-                        </div>
-                        <div>
-                          <label className="form-label">Repasse Marco (%)</label>
+                          <label className="form-label">Comissão Marco Bianchini (%)</label>
                           <input type="number" min={0} max={100} step={0.1}
                             value={conf.repasse_marco}
                             onChange={e => updateConfDentista(d.id, { repasse_marco: parseFloat(e.target.value) || 0 })}
                             className="form-input"
-                            placeholder="0.0"
+                            placeholder="13.0"
                           />
+                          <p className="text-xs mt-1" style={{ color: 'var(--text-3)' }}>
+                            Calculado sobre (Valor − Impostos) por lançamento
+                          </p>
                         </div>
                       </div>
                       <div className="flex items-center gap-3">
