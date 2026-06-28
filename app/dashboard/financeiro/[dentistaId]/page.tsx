@@ -135,13 +135,9 @@ export default function DentistaFinanceiroPage() {
   // Fechar mês
   const [modalFecharMes, setModalFecharMes] = useState(false)
   const [configRateio, setConfigRateio] = useState<ConfigRateio | null>(null)
+  const [impostosConfig, setImpostosConfig] = useState<Record<string, number>>({})
   const [comissaoMarcoPct, setComissaoMarcoPct] = useState(0)
-  const [fechCalc, setFechCalc] = useState<{
-    totalImpostos: number
-    totalComissao: number
-    aReceber: number
-    liquido: number
-  } | null>(null)
+  const [labTotal, setLabTotal] = useState('')
   const [fechandoMes, setFechandoMes] = useState(false)
   const [erroFechamento, setErroFechamento] = useState<string | null>(null)
 
@@ -157,6 +153,22 @@ export default function DentistaFinanceiroPage() {
     supabase.from('dentistas').select('id, nome').eq('ativo', true).order('nome')
       .then(({ data }) => { if (data) setListaDentistas(data) })
   }, [])
+
+  // Carrega configs de impostos e comissão (usados no preview e no fechar mês)
+  useEffect(() => {
+    supabase.from('configuracoes_impostos').select('*')
+      .then(({ data }) => {
+        if (!data) return
+        const map: Record<string, number> = {}
+        data.forEach((i: { forma_pagamento: string; tem_imposto: boolean; percentual_imposto: number }) => {
+          map[i.forma_pagamento] = i.tem_imposto ? i.percentual_imposto : 0
+        })
+        setImpostosConfig(map)
+      })
+    supabase.from('configuracoes_dentistas')
+      .select('repasse_marco').eq('dentista_id', dentistaId).single()
+      .then(({ data }) => { if (data) setComissaoMarcoPct(data.repasse_marco ?? 0) })
+  }, [dentistaId])
 
   useEffect(() => {
     setLoading(true)
@@ -273,79 +285,68 @@ export default function DentistaFinanceiroPage() {
 
   async function abrirFecharMes() {
     setErroFechamento(null)
-    setFechCalc(null)
-
-    // Carrega config de Marco
+    setLabTotal('')
     const { data: cfgRateio } = await supabase.from('configuracoes_rateio').select('*').limit(1).single()
     if (cfgRateio) {
       setConfigRateio({ ...cfgRateio, dentistas_rateio: (cfgRateio.dentistas_rateio as string[]) ?? [] } as ConfigRateio)
     }
-
-    // Carrega imposto% por forma de pagamento
-    const { data: cfgImpostos } = await supabase.from('configuracoes_impostos').select('*')
-    const impostosMap: Record<string, number> = {}
-    if (cfgImpostos) {
-      cfgImpostos.forEach((i: { forma_pagamento: string; tem_imposto: boolean; percentual_imposto: number }) => {
-        impostosMap[i.forma_pagamento] = i.tem_imposto ? i.percentual_imposto : 0
-      })
-    }
-
-    // Carrega comissão% deste dentista
-    const { data: cfgDent } = await supabase.from('configuracoes_dentistas')
-      .select('repasse_marco').eq('dentista_id', dentistaId).single()
-    const comissaoPct = cfgDent?.repasse_marco ?? 0
-    setComissaoMarcoPct(comissaoPct)
-
-    // Calcula por lançamento (apenas receitas)
-    let totalImpostos = 0
-    let totalComissao = 0
-    for (const l of lancamentos.filter(l => l.tipo === 'receita')) {
-      const impPct    = impostosMap[l.forma] ?? 0
-      const impostos  = Math.round(l.valor * impPct / 100 * 100) / 100
-      const comissao  = Math.round((l.valor - impostos) * comissaoPct / 100 * 100) / 100
-      totalImpostos  += impostos
-      totalComissao  += comissao
-    }
-    totalImpostos = Math.round(totalImpostos * 100) / 100
-    totalComissao = Math.round(totalComissao * 100) / 100
-    const aReceber = Math.round((totalRec - totalImpostos - totalComissao) * 100) / 100
-    const liquido  = Math.round((aReceber + totalRecebidos - totalDespResp) * 100) / 100
-
-    setFechCalc({ totalImpostos, totalComissao, aReceber, liquido })
     setModalFecharMes(true)
   }
 
+  function calcFechamento(labVal: number) {
+    let totalImpostos = 0
+    for (const l of receitas) {
+      const impPct = impostosConfig[l.forma] ?? 0
+      totalImpostos += l.valor * impPct / 100
+    }
+    totalImpostos = Math.round(totalImpostos * 100) / 100
+    const baseComissao  = Math.max(0, totalRec - totalImpostos - labVal)
+    const totalComissao = Math.round(baseComissao * comissaoMarcoPct / 100 * 100) / 100
+    const aReceber      = Math.round((totalRec - totalImpostos - labVal - totalComissao) * 100) / 100
+    const liquido       = Math.round((aReceber + totalRecebidos - totalDespResp) * 100) / 100
+    return { totalImpostos, totalComissao, aReceber, liquido, baseComissao }
+  }
+
   async function confirmarFechamento() {
-    if (!configRateio || !dentistaNome || !fechCalc) return
+    if (!configRateio || !dentistaNome) return
     setFechandoMes(true)
     setErroFechamento(null)
 
+    const labVal   = parseFloat(labTotal) || 0
+    const calc     = calcFechamento(labVal)
     const ultimoDia = toISO(ano, mes, new Date(ano, mes + 1, 0).getDate())
     const mesLabel  = `${MESES[mes]}/${ano}`
     const inserts: object[] = []
 
-    // Impostos (despesa no dentista, sem destino específico)
-    if (fechCalc.totalImpostos > 0) {
+    if (calc.totalImpostos > 0) {
       inserts.push({
         data: ultimoDia, tipo: 'despesa',
         descricao: `Impostos – ${mesLabel}`,
-        valor: fechCalc.totalImpostos, forma: 'Imposto',
+        valor: calc.totalImpostos, forma: 'Imposto',
         dentista_id: dentistaId, nota_fiscal: false,
       })
     }
 
-    // Comissão Marco — despesa no dentista + receita no Marco
-    if (fechCalc.totalComissao > 0 && configRateio.marco_dentista_id && configRateio.marco_dentista_id !== dentistaId) {
+    if (labVal > 0) {
+      inserts.push({
+        data: ultimoDia, tipo: 'despesa',
+        descricao: `Laboratório – ${mesLabel}`,
+        valor: labVal, forma: 'Laboratório',
+        dentista_id: dentistaId, nota_fiscal: false,
+      })
+    }
+
+    if (calc.totalComissao > 0 && configRateio.marco_dentista_id && configRateio.marco_dentista_id !== dentistaId) {
       inserts.push({
         data: ultimoDia, tipo: 'despesa',
         descricao: `Comissão Marco Bianchini – ${mesLabel}`,
-        valor: fechCalc.totalComissao, forma: 'Rateio',
+        valor: calc.totalComissao, forma: 'Rateio',
         dentista_id: dentistaId, nota_fiscal: false,
       })
       inserts.push({
         data: ultimoDia, tipo: 'receita',
         descricao: `Comissão de ${dentistaNome} – ${mesLabel}`,
-        valor: fechCalc.totalComissao, forma: 'Rateio',
+        valor: calc.totalComissao, forma: 'Rateio',
         dentista_id: configRateio.marco_dentista_id, nota_fiscal: false,
       })
     }
@@ -357,6 +358,7 @@ export default function DentistaFinanceiroPage() {
 
     setFechandoMes(false)
     setModalFecharMes(false)
+    setLabTotal('')
     setRefreshKey(k => k + 1)
   }
 
@@ -393,6 +395,10 @@ export default function DentistaFinanceiroPage() {
   })
 
   const titulo = periodo === 'mes' ? `${MESES[mes]} ${ano}` : String(ano)
+
+  // Preview estimado de comissão (sem laboratório — laboratório é informado no fechamento)
+  const estImpostos     = receitas.reduce((s, l) => s + l.valor * (impostosConfig[l.forma] ?? 0) / 100, 0)
+  const estComissaoMarco = Math.max(0, totalRec - estImpostos) * comissaoMarcoPct / 100
 
   return (
     <div>
@@ -474,6 +480,24 @@ export default function DentistaFinanceiroPage() {
               <p className="card-sub">{lancamentos.length} lançamento(s)</p>
             </div>
           </div>
+
+          {/* ── Preview comissão Marco (só mensal, só se comissão configurada) ── */}
+          {periodo === 'mes' && comissaoMarcoPct > 0 && totalRec > 0 && (
+            <div className="mb-6 rounded-xl px-4 py-3 flex items-center justify-between"
+              style={{ backgroundColor: 'var(--surface-muted)', border: '1px solid var(--border)' }}>
+              <div className="flex items-center gap-2">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" style={{ color: 'var(--text-3)', flexShrink: 0 }}>
+                  <circle cx="12" cy="12" r="10"/><path d="M12 8v4l3 3"/>
+                </svg>
+                <span className="text-xs" style={{ color: 'var(--text-2)' }}>
+                  Comissão estimada Marco Bianchini ({comissaoMarcoPct}%) — sem laboratório
+                </span>
+              </div>
+              <span className="text-sm font-semibold text-despesa ml-4 flex-shrink-0">
+                R$ {fmt(estComissaoMarco)}
+              </span>
+            </div>
+          )}
 
           {/* ── Visão anual: cards por mês ── */}
           {periodo === 'ano' ? (
@@ -944,105 +968,129 @@ export default function DentistaFinanceiroPage() {
       )}
 
       {/* ── Modal: Fechar Mês ── */}
-      {modalFecharMes && (
-        <div className="modal-overlay">
-          <div className="modal" style={{ maxWidth: '32rem' }}>
-            <div className="modal-header">
-              <h3 className="modal-title">
-                Fechar Mês — {dentistaNome} — {MESES[mes]}/{ano}
-              </h3>
-              <button onClick={() => setModalFecharMes(false)} className="nav-icon hover:text-red-400 transition-colors">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
-              </button>
-            </div>
+      {modalFecharMes && (() => {
+        const labVal  = parseFloat(labTotal) || 0
+        const calc    = calcFechamento(labVal)
+        const semNada = calc.totalImpostos === 0 && calc.totalComissao === 0 && labVal === 0
+        return (
+          <div className="modal-overlay">
+            <div className="modal" style={{ maxWidth: '34rem' }}>
+              <div className="modal-header">
+                <h3 className="modal-title">
+                  Fechar Mês — {dentistaNome} — {MESES[mes]}/{ano}
+                </h3>
+                <button onClick={() => setModalFecharMes(false)} className="nav-icon hover:text-red-400 transition-colors">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
+                </button>
+              </div>
 
-            {!fechCalc ? (
-              <p className="page-subtitle text-center py-6">Calculando...</p>
-            ) : (
-              <>
-                {/* Cálculo por lançamento (fórmula da planilha) */}
-                <div className="rounded-xl p-4 mb-4 flex flex-col gap-2" style={{ backgroundColor: 'var(--surface-muted)' }}>
-                  <p className="text-xs font-semibold uppercase tracking-widest mb-2" style={{ color: 'var(--text-3)' }}>
-                    Faturamento do período
-                  </p>
-                  <div className="flex justify-between text-xs">
-                    <span style={{ color: 'var(--text-2)' }}>Faturamento bruto ({receitas.length} lançamento(s))</span>
-                    <span className="text-receita font-medium">R$ {fmt(totalRec)}</span>
-                  </div>
-                  <div className="flex justify-between text-xs">
-                    <span style={{ color: 'var(--text-2)' }}>Impostos (sobre formas tributadas)</span>
-                    <span className="text-despesa">− R$ {fmt(fechCalc.totalImpostos)}</span>
-                  </div>
-                  <div className="flex justify-between text-xs">
-                    <span style={{ color: 'var(--text-2)' }}>Comissão Marco Bianchini ({comissaoMarcoPct}%)</span>
-                    <span className="text-despesa">− R$ {fmt(fechCalc.totalComissao)}</span>
-                  </div>
-                  <div className="flex justify-between text-sm font-semibold pt-2" style={{ borderTop: '1px solid var(--border)' }}>
-                    <span style={{ color: 'var(--text-1)' }}>A receber (dentista)</span>
-                    <span className={fechCalc.aReceber >= 0 ? 'text-receita' : 'text-despesa'}>R$ {fmt(fechCalc.aReceber)}</span>
-                  </div>
+              {/* Input laboratório */}
+              <div className="mb-4">
+                <label className="form-label">Laboratório total do mês (R$)</label>
+                <input
+                  type="number" min="0" step="0.01" placeholder="0,00"
+                  value={labTotal}
+                  onChange={e => setLabTotal(e.target.value)}
+                  className="form-input"
+                />
+                <p className="text-xs mt-1" style={{ color: 'var(--text-3)' }}>
+                  Deduzido da base antes de calcular a comissão de Marco Bianchini
+                </p>
+              </div>
+
+              {/* Cálculo por lançamento (fórmula da planilha) */}
+              <div className="rounded-xl p-4 mb-4 flex flex-col gap-2" style={{ backgroundColor: 'var(--surface-muted)' }}>
+                <p className="text-xs font-semibold uppercase tracking-widest mb-1" style={{ color: 'var(--text-3)' }}>
+                  Faturamento do período
+                </p>
+                <div className="flex justify-between text-xs">
+                  <span style={{ color: 'var(--text-2)' }}>Faturamento bruto ({receitas.length} lançamento(s))</span>
+                  <span className="text-receita font-medium">R$ {fmt(totalRec)}</span>
                 </div>
-
-                {/* Ajustes */}
-                {(totalRecebidos > 0 || totalDespResp > 0) && (
-                  <div className="rounded-xl p-4 mb-4 flex flex-col gap-2" style={{ border: '1px solid var(--border)' }}>
-                    <p className="text-xs font-semibold uppercase tracking-widest mb-1" style={{ color: 'var(--text-3)' }}>
-                      Ajustes
-                    </p>
-                    {totalRecebidos > 0 && (
-                      <div className="flex justify-between text-xs">
-                        <span style={{ color: 'var(--text-2)' }}>Repasses / Participações recebidas</span>
-                        <span className="text-receita">+ R$ {fmt(totalRecebidos)}</span>
-                      </div>
-                    )}
-                    {totalDespResp > 0 && (
-                      <div className="flex justify-between text-xs">
-                        <span style={{ color: 'var(--text-2)' }}>Despesas atribuídas</span>
-                        <span className="text-despesa">− R$ {fmt(totalDespResp)}</span>
-                      </div>
-                    )}
-                    <div className="flex justify-between text-sm font-semibold pt-2" style={{ borderTop: '1px solid var(--border)' }}>
-                      <span style={{ color: 'var(--text-1)' }}>Total líquido</span>
-                      <span className={fechCalc.liquido >= 0 ? 'text-receita' : 'text-despesa'}>R$ {fmt(fechCalc.liquido)}</span>
-                    </div>
+                <div className="flex justify-between text-xs">
+                  <span style={{ color: 'var(--text-2)' }}>Impostos (sobre formas tributadas)</span>
+                  <span className="text-despesa">− R$ {fmt(calc.totalImpostos)}</span>
+                </div>
+                {labVal > 0 && (
+                  <div className="flex justify-between text-xs">
+                    <span style={{ color: 'var(--text-2)' }}>Laboratório</span>
+                    <span className="text-despesa">− R$ {fmt(labVal)}</span>
                   </div>
                 )}
+                <div className="flex justify-between text-xs" style={{ borderTop: '1px dashed var(--border)', paddingTop: '6px', marginTop: '2px' }}>
+                  <span style={{ color: 'var(--text-3)' }}>Base da comissão</span>
+                  <span style={{ color: 'var(--text-2)' }}>R$ {fmt(calc.baseComissao)}</span>
+                </div>
+                <div className="flex justify-between text-xs">
+                  <span style={{ color: 'var(--text-2)' }}>Comissão Marco Bianchini ({comissaoMarcoPct}%)</span>
+                  <span className="text-despesa">− R$ {fmt(calc.totalComissao)}</span>
+                </div>
+                <div className="flex justify-between text-sm font-semibold pt-2" style={{ borderTop: '1px solid var(--border)' }}>
+                  <span style={{ color: 'var(--text-1)' }}>A receber (dentista)</span>
+                  <span className={calc.aReceber >= 0 ? 'text-receita' : 'text-despesa'}>R$ {fmt(calc.aReceber)}</span>
+                </div>
+              </div>
 
-                {/* O que será gerado */}
-                <div className="rounded-xl p-4 mb-4" style={{ backgroundColor: 'var(--accent-soft)', border: '1px solid rgba(16,185,129,0.2)' }}>
-                  <p className="text-xs font-semibold mb-2" style={{ color: 'var(--accent)' }}>O que será registrado:</p>
-                  <div className="flex flex-col gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
-                    {fechCalc.totalImpostos > 0 && (
-                      <p>• Despesa de Impostos (R$ {fmt(fechCalc.totalImpostos)}) na sua conta</p>
-                    )}
-                    {fechCalc.totalComissao > 0 && configRateio?.marco_dentista_id && configRateio.marco_dentista_id !== dentistaId && (
-                      <p>• Comissão Marco Bianchini (R$ {fmt(fechCalc.totalComissao)}) — deduzida aqui e creditada para Marco</p>
-                    )}
-                    {fechCalc.totalComissao > 0 && (!configRateio?.marco_dentista_id || configRateio.marco_dentista_id === dentistaId) && (
-                      <p className="text-amber-400">Atenção: Marco Bianchini não configurado em Administração → Configurações. A comissão não será creditada.</p>
-                    )}
-                    {fechCalc.totalImpostos === 0 && fechCalc.totalComissao === 0 && (
-                      <p>Nenhum lançamento a gerar (sem impostos nem comissão configurados).</p>
-                    )}
+              {/* Ajustes */}
+              {(totalRecebidos > 0 || totalDespResp > 0) && (
+                <div className="rounded-xl p-4 mb-4 flex flex-col gap-2" style={{ border: '1px solid var(--border)' }}>
+                  <p className="text-xs font-semibold uppercase tracking-widest mb-1" style={{ color: 'var(--text-3)' }}>
+                    Ajustes
+                  </p>
+                  {totalRecebidos > 0 && (
+                    <div className="flex justify-between text-xs">
+                      <span style={{ color: 'var(--text-2)' }}>Repasses / Participações recebidas</span>
+                      <span className="text-receita">+ R$ {fmt(totalRecebidos)}</span>
+                    </div>
+                  )}
+                  {totalDespResp > 0 && (
+                    <div className="flex justify-between text-xs">
+                      <span style={{ color: 'var(--text-2)' }}>Despesas atribuídas</span>
+                      <span className="text-despesa">− R$ {fmt(totalDespResp)}</span>
+                    </div>
+                  )}
+                  <div className="flex justify-between text-sm font-semibold pt-2" style={{ borderTop: '1px solid var(--border)' }}>
+                    <span style={{ color: 'var(--text-1)' }}>Total líquido</span>
+                    <span className={calc.liquido >= 0 ? 'text-receita' : 'text-despesa'}>R$ {fmt(calc.liquido)}</span>
                   </div>
                 </div>
+              )}
 
-                {erroFechamento && <p className="text-xs text-red-400 mb-3">{erroFechamento}</p>}
-
-                <div className="flex gap-2">
-                  <button onClick={() => setModalFecharMes(false)} className="btn-secondary flex-1 py-2">Cancelar</button>
-                  <button
-                    onClick={confirmarFechamento}
-                    disabled={fechandoMes || (fechCalc.totalImpostos === 0 && fechCalc.totalComissao === 0)}
-                    className="btn-primary flex-1 py-2">
-                    {fechandoMes ? 'Processando...' : 'Confirmar Fechamento'}
-                  </button>
+              {/* O que será registrado */}
+              <div className="rounded-xl p-4 mb-4" style={{ backgroundColor: 'var(--accent-soft)', border: '1px solid rgba(16,185,129,0.2)' }}>
+                <p className="text-xs font-semibold mb-2" style={{ color: 'var(--accent)' }}>O que será registrado:</p>
+                <div className="flex flex-col gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
+                  {calc.totalImpostos > 0 && (
+                    <p>• Despesa de Impostos (R$ {fmt(calc.totalImpostos)}) na sua conta</p>
+                  )}
+                  {labVal > 0 && (
+                    <p>• Despesa de Laboratório (R$ {fmt(labVal)}) na sua conta</p>
+                  )}
+                  {calc.totalComissao > 0 && configRateio?.marco_dentista_id && configRateio.marco_dentista_id !== dentistaId && (
+                    <p>• Comissão Marco Bianchini (R$ {fmt(calc.totalComissao)}) — deduzida aqui e creditada para Marco</p>
+                  )}
+                  {calc.totalComissao > 0 && (!configRateio?.marco_dentista_id || configRateio.marco_dentista_id === dentistaId) && (
+                    <p className="text-amber-400">Atenção: Marco Bianchini não está configurado. A comissão não será creditada.</p>
+                  )}
+                  {semNada && <p>Nenhum lançamento a gerar (sem impostos, laboratório nem comissão configurados).</p>}
                 </div>
-              </>
-            )}
+              </div>
+
+              {erroFechamento && <p className="text-xs text-red-400 mb-3">{erroFechamento}</p>}
+
+              <div className="flex gap-2">
+                <button onClick={() => setModalFecharMes(false)} className="btn-secondary flex-1 py-2">Cancelar</button>
+                <button
+                  onClick={confirmarFechamento}
+                  disabled={fechandoMes || semNada}
+                  className="btn-primary flex-1 py-2">
+                  {fechandoMes ? 'Processando...' : 'Confirmar Fechamento'}
+                </button>
+              </div>
+            </div>
           </div>
-        </div>
-      )}
+        )
+      })()}
     </div>
   )
 }
