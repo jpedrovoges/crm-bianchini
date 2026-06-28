@@ -22,6 +22,8 @@ type Lancamento = {
   destinatarios: { nome: string; tipo: string } | null
   dentista_id: string | null
   dentistas: { nome: string } | null
+  dentista_responsavel_id: string | null
+  dentistas_responsavel: { nome: string } | null
   nota_fiscal: boolean
   numero_nf: string | null
   categoria: string | null
@@ -33,18 +35,19 @@ type Destinatario = { id: string; nome: string; tipo: 'dentista' | 'empresa' }
 type Dentista     = { id: string; nome: string }
 
 const formVazio = {
-  tipo:           'receita' as 'receita' | 'despesa',
-  descricao:      '',
-  valor:          '',
-  forma:          'Pix',
-  paciente_id:    '',
-  destinatario_id:'',
-  dentista_id:    '',
-  parcelas:       '1',
-  nota_fiscal:    false,
-  numero_nf:      '',
-  categoria:      'procedimento' as 'venda' | 'procedimento',
-  observacao:     '',
+  tipo:                   'receita' as 'receita' | 'despesa',
+  descricao:              '',
+  valor:                  '',
+  forma:                  'Pix',
+  paciente_id:            '',
+  destinatario_id:        '',
+  dentista_id:            '',
+  dentista_responsavel_id:'',
+  parcelas:               '1',
+  nota_fiscal:            false,
+  numero_nf:              '',
+  categoria:              'procedimento' as 'venda' | 'procedimento',
+  observacao:             '',
 }
 
 function toISO(ano: number, mes: number, dia: number) {
@@ -124,7 +127,7 @@ export default function MovimentoDiarioPage() {
   useEffect(() => {
     if (visao !== 'diario' || !diaSelecionado) return
     supabase.from('lancamentos')
-      .select('*, pacientes(nome), destinatarios(nome, tipo), dentistas(nome)')
+      .select('*, pacientes(nome), destinatarios(nome, tipo), dentistas(nome), dentistas_responsavel:dentistas!dentista_responsavel_id(nome)')
       .eq('data', toISO(ano, mes, diaSelecionado))
       .order('created_at')
       .then(({ data }) => { if (data) setLancamentosDia(data as Lancamento[]) })
@@ -136,7 +139,7 @@ export default function MovimentoDiarioPage() {
     const inicio = toISO(ano, mes, 1)
     const fim    = toISO(ano, mes, new Date(ano, mes + 1, 0).getDate())
     supabase.from('lancamentos')
-      .select('*, pacientes(nome), destinatarios(nome, tipo), dentistas(nome)')
+      .select('*, pacientes(nome), destinatarios(nome, tipo), dentistas(nome), dentistas_responsavel:dentistas!dentista_responsavel_id(nome)')
       .gte('data', inicio).lte('data', fim)
       .order('data').order('created_at')
       .then(({ data }) => { if (data) setLancamentosMes(data as Lancamento[]) })
@@ -169,24 +172,27 @@ export default function MovimentoDiarioPage() {
     const numParcelas = form.forma === 'Cartão Crédito' ? Math.max(1, parseInt(form.parcelas) || 1) : 1
     const valorParc   = parseFloat((valorTotal / numParcelas).toFixed(2))
 
+    const despComDentista = form.tipo === 'despesa' && !!form.dentista_responsavel_id
+
     const inserts = Array.from({ length: numParcelas }, (_, i) => {
       const tMes     = mes + i
       const tAno     = ano + Math.floor(tMes / 12)
       const tMesNorm = tMes % 12
       const diaFinal = Math.min(diaSelecionado, new Date(tAno, tMesNorm + 1, 0).getDate())
       return {
-        data:            toISO(tAno, tMesNorm, diaFinal),
-        tipo:            form.tipo,
-        descricao:       numParcelas > 1 ? `${form.descricao} (${i + 1}/${numParcelas})` : form.descricao,
-        valor:           valorParc,
-        forma:           form.forma,
-        paciente_id:     form.tipo === 'receita' ? (form.paciente_id || null) : null,
-        destinatario_id: form.tipo === 'despesa' ? (form.destinatario_id || null) : null,
-        nota_fiscal:     form.tipo === 'receita' ? form.nota_fiscal : false,
-        numero_nf:       form.tipo === 'receita' && form.nota_fiscal && form.numero_nf.trim() ? form.numero_nf.trim() : null,
-        categoria:       form.tipo === 'receita' ? form.categoria : null,
-        observacao:      form.tipo === 'receita' && form.categoria === 'procedimento' && form.observacao.trim() ? form.observacao.trim() : null,
-        dentista_id:     form.tipo === 'receita' ? (form.dentista_id || null) : null,
+        data:                    toISO(tAno, tMesNorm, diaFinal),
+        tipo:                    form.tipo,
+        descricao:               numParcelas > 1 ? `${form.descricao} (${i + 1}/${numParcelas})` : form.descricao,
+        valor:                   valorParc,
+        forma:                   despComDentista ? 'Desconto' : form.forma,
+        paciente_id:             form.tipo === 'receita' ? (form.paciente_id || null) : null,
+        destinatario_id:         form.tipo === 'despesa' && !despComDentista ? (form.destinatario_id || null) : null,
+        nota_fiscal:             form.tipo === 'receita' ? form.nota_fiscal : false,
+        numero_nf:               form.tipo === 'receita' && form.nota_fiscal && form.numero_nf.trim() ? form.numero_nf.trim() : null,
+        categoria:               form.tipo === 'receita' ? form.categoria : null,
+        observacao:              form.tipo === 'receita' && form.categoria === 'procedimento' && form.observacao.trim() ? form.observacao.trim() : null,
+        dentista_id:             form.tipo === 'receita' ? (form.dentista_id || null) : null,
+        dentista_responsavel_id: despComDentista ? form.dentista_responsavel_id : null,
       }
     })
 
@@ -195,7 +201,7 @@ export default function MovimentoDiarioPage() {
 
     const dataHoje = toISO(ano, mes, diaSelecionado)
     const { data: novo } = await supabase.from('lancamentos')
-      .select('*, pacientes(nome), destinatarios(nome, tipo), dentistas(nome)')
+      .select('*, pacientes(nome), destinatarios(nome, tipo), dentistas(nome), dentistas_responsavel:dentistas!dentista_responsavel_id(nome)')
       .eq('data', dataHoje).order('created_at')
     if (novo) setLancamentosDia(novo as Lancamento[])
 
@@ -308,9 +314,10 @@ export default function MovimentoDiarioPage() {
     onConfirmar?: () => void
     onCancelar?: () => void
   }) {
-    const vinculo  = l.tipo === 'receita' ? (l.pacientes?.nome ?? null) : (l.destinatarios?.nome ?? null)
-    const catLabel = l.categoria === 'venda' ? 'Venda' : l.categoria === 'procedimento' ? 'Procedimento' : null
-    const dentista = l.dentistas?.nome ?? null
+    const vinculo       = l.tipo === 'receita' ? (l.pacientes?.nome ?? null) : (l.destinatarios?.nome ?? null)
+    const catLabel      = l.categoria === 'venda' ? 'Venda' : l.categoria === 'procedimento' ? 'Procedimento' : null
+    const dentista      = l.tipo === 'receita' ? (l.dentistas?.nome ?? null) : null
+    const dentResp      = l.tipo === 'despesa' ? (l.dentistas_responsavel?.nome ?? null) : null
     return (
       <div className="movimento-item">
         <div className={l.tipo === 'receita' ? 'dot-receita' : 'dot-despesa'} />
@@ -319,6 +326,7 @@ export default function MovimentoDiarioPage() {
           <p className="mov-meta">
             {l.forma}
             {dentista ? ` · ${dentista}` : ''}
+            {dentResp ? ` · Resp: ${dentResp}` : ''}
             {catLabel ? ` · ${catLabel}` : ''}
             {vinculo ? ` · ${vinculo}` : ''}
             {l.observacao ? ` · ${l.observacao}` : ''}
@@ -599,7 +607,7 @@ export default function MovimentoDiarioPage() {
             <div className="flex gap-2 mb-4">
               {(['receita', 'despesa'] as const).map(t => (
                 <button key={t}
-                  onClick={() => setForm(f => ({ ...f, tipo: t, paciente_id: '', destinatario_id: '', dentista_id: '', nota_fiscal: false, numero_nf: '', categoria: 'procedimento', observacao: '' }))}
+                  onClick={() => setForm(f => ({ ...f, tipo: t, paciente_id: '', destinatario_id: '', dentista_id: '', dentista_responsavel_id: '', nota_fiscal: false, numero_nf: '', categoria: 'procedimento', observacao: '' }))}
                   className={`tipo-btn ${form.tipo === t ? (t === 'receita' ? 'tipo-receita-active' : 'tipo-despesa-active') : ''}`}>
                   {t === 'receita' ? 'Receita' : 'Despesa'}
                 </button>
@@ -615,12 +623,14 @@ export default function MovimentoDiarioPage() {
                 <label className="form-label">Valor (R$)</label>
                 <input type="number" value={form.valor} onChange={e => setForm(f => ({ ...f, valor: e.target.value }))} placeholder="0,00" className="form-input" />
               </div>
-              <div>
-                <label className="form-label">Forma de Pagamento</label>
-                <select value={form.forma} onChange={e => setForm(f => ({ ...f, forma: e.target.value, parcelas: '1' }))} className="form-select">
-                  {FORMAS.map(f => <option key={f}>{f}</option>)}
-                </select>
-              </div>
+              {!(form.tipo === 'despesa' && form.dentista_responsavel_id) && (
+                <div>
+                  <label className="form-label">Forma de Pagamento</label>
+                  <select value={form.forma} onChange={e => setForm(f => ({ ...f, forma: e.target.value, parcelas: '1' }))} className="form-select">
+                    {FORMAS.map(f => <option key={f}>{f}</option>)}
+                  </select>
+                </div>
+              )}
               {form.forma === 'Cartão Crédito' && (
                 <div>
                   <label className="form-label">Parcelas</label>
@@ -705,8 +715,27 @@ export default function MovimentoDiarioPage() {
                 </>
               )}
 
-              {/* ── Despesa: Destinatário ── */}
+              {/* ── Despesa: Dentista responsável ── */}
               {form.tipo === 'despesa' && (
+                <div>
+                  <label className="form-label">Dentista responsável <span className="nav-icon">(opcional)</span></label>
+                  <select
+                    value={form.dentista_responsavel_id}
+                    onChange={e => setForm(f => ({ ...f, dentista_responsavel_id: e.target.value, destinatario_id: '' }))}
+                    className="form-select">
+                    <option value="">— Sem dentista (despesa geral) —</option>
+                    {listaDentistas.map(d => <option key={d.id} value={d.id}>{d.nome}</option>)}
+                  </select>
+                  {form.dentista_responsavel_id && (
+                    <p className="text-xs mt-1.5" style={{ color: 'var(--text-3)' }}>
+                      Despesa descontada do lucro do dentista no fechamento do mês. Forma de pagamento não necessária.
+                    </p>
+                  )}
+                </div>
+              )}
+
+              {/* ── Despesa: Destinatário (só quando sem dentista responsável) ── */}
+              {form.tipo === 'despesa' && !form.dentista_responsavel_id && (
                 <div>
                   <div className="flex items-center justify-between mb-1">
                     <label className="form-label mb-0">Destinatário <span className="nav-icon">(opcional)</span></label>

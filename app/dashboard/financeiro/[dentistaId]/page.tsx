@@ -8,7 +8,7 @@ import ImportarCelos from './ImportarCelos'
 import { useSession } from '@/app/dashboard/SessionProvider'
 
 const MESES = ['Janeiro','Fevereiro','Março','Abril','Maio','Junho','Julho','Agosto','Setembro','Outubro','Novembro','Dezembro']
-const FORMAS = ['Pix', 'Dinheiro', 'Cartão Crédito', 'Cartão Débito']
+const FORMAS = ['Pix', 'Dinheiro', 'Cartão Crédito', 'Cartão Débito', 'Convênio', 'Rateio', 'Desconto']
 
 type Periodo = 'mes' | 'ano'
 
@@ -54,6 +54,23 @@ type RepasseRecebido = {
   valor: number
   lancamento: { data: string; descricao: string } | null
   origem: { nome: string } | null
+}
+
+type DespesaResponsavel = {
+  id: string
+  data: string
+  descricao: string
+  valor: number
+  forma: string
+}
+
+type ConfigRateio = {
+  id: string
+  percentual_dentista: number
+  percentual_marco: number
+  percentual_outros: number
+  marco_dentista_id: string | null
+  dentistas_rateio: string[]
 }
 
 function fmt(v: number) {
@@ -111,6 +128,17 @@ export default function DentistaFinanceiroPage() {
 
   // Repasses chegando (destino = este dentista)
   const [repassesRecebidos, setRepassesRecebidos] = useState<RepasseRecebido[]>([])
+
+  // Despesas do movimento diário atribuídas a este dentista
+  const [despesasResponsavel, setDespesasResponsavel] = useState<DespesaResponsavel[]>([])
+
+  // Fechar mês
+  const [modalFecharMes, setModalFecharMes] = useState(false)
+  const [modoFechamento, setModoFechamento] = useState<'rateio' | 'simples'>('rateio')
+  const [configRateio, setConfigRateio] = useState<ConfigRateio | null>(null)
+  const [selecionadosRateio, setSelecionadosRateio] = useState<string[]>([])
+  const [fechandoMes, setFechandoMes] = useState(false)
+  const [erroFechamento, setErroFechamento] = useState<string | null>(null)
 
   useEffect(() => {
     supabase.from('dentistas').select('nome').eq('id', dentistaId).single()
@@ -174,6 +202,18 @@ export default function DentistaFinanceiroPage() {
       })
   }, [dentistaId, mes, ano, periodo, refreshKey])
 
+  // Despesas do movimento diário onde este dentista é o responsável
+  useEffect(() => {
+    const inicio = periodo === 'mes' ? toISO(ano, mes, 1) : `${ano}-01-01`
+    const fim    = periodo === 'mes' ? toISO(ano, mes, new Date(ano, mes + 1, 0).getDate()) : `${ano}-12-31`
+    supabase.from('lancamentos')
+      .select('id, data, descricao, valor, forma')
+      .eq('dentista_responsavel_id', dentistaId)
+      .eq('tipo', 'despesa')
+      .gte('data', inicio).lte('data', fim)
+      .then(({ data }) => { if (data) setDespesasResponsavel(data as DespesaResponsavel[]) })
+  }, [dentistaId, mes, ano, periodo, refreshKey])
+
   function mesAnterior() { if (mes === 0) { setMes(11); setAno(a => a - 1) } else setMes(m => m - 1) }
   function proximoMes()  { if (mes === 11) { setMes(0); setAno(a => a + 1) } else setMes(m => m + 1) }
 
@@ -226,6 +266,71 @@ export default function DentistaFinanceiroPage() {
     setRepasses(prev => ({ ...prev, [lancId]: (prev[lancId] ?? []).filter(r => r.id !== repasseId) }))
   }
 
+  async function abrirFecharMes() {
+    setErroFechamento(null)
+    const { data } = await supabase.from('configuracoes_rateio').select('*').limit(1).single()
+    if (data) {
+      const cfg = { ...data, dentistas_rateio: (data.dentistas_rateio as string[]) ?? [] } as ConfigRateio
+      setConfigRateio(cfg)
+      setSelecionadosRateio(cfg.dentistas_rateio.filter(id => id !== dentistaId))
+    }
+    setModoFechamento('rateio')
+    setModalFecharMes(true)
+  }
+
+  async function confirmarFechamento() {
+    if (!configRateio || !dentistaNome) return
+    setFechandoMes(true)
+    setErroFechamento(null)
+
+    const base = saldoLiquido
+    if (base <= 0) { setErroFechamento('Saldo líquido é zero ou negativo.'); setFechandoMes(false); return }
+
+    const marcoShare  = Math.round(base * (configRateio.percentual_marco / 100) * 100) / 100
+    const outrosTotal = Math.round(base * (configRateio.percentual_outros / 100) * 100) / 100
+    const numOutros   = selecionadosRateio.length
+    const perOutros   = numOutros > 0 ? Math.round((outrosTotal / numOutros) * 100) / 100 : 0
+
+    const ultimoDia = toISO(ano, mes, new Date(ano, mes + 1, 0).getDate())
+    const mesLabel  = `${MESES[mes]}/${ano}`
+    const inserts   = []
+
+    // Marco Bianchini
+    if (marcoShare > 0 && configRateio.marco_dentista_id && configRateio.marco_dentista_id !== dentistaId) {
+      inserts.push({
+        data: ultimoDia, tipo: 'despesa', descricao: `Rateio Marco – ${mesLabel}`,
+        valor: marcoShare, forma: 'Rateio', dentista_id: dentistaId, nota_fiscal: false,
+      })
+      inserts.push({
+        data: ultimoDia, tipo: 'receita', descricao: `Rateio de ${dentistaNome} – ${mesLabel}`,
+        valor: marcoShare, forma: 'Rateio', dentista_id: configRateio.marco_dentista_id, nota_fiscal: false,
+      })
+    }
+
+    // Outros dentistas selecionados
+    for (const outroId of selecionadosRateio) {
+      if (outroId === dentistaId || perOutros <= 0) continue
+      const outroNome = listaDentistas.find(d => d.id === outroId)?.nome ?? outroId
+      inserts.push({
+        data: ultimoDia, tipo: 'despesa', descricao: `Rateio ${outroNome} – ${mesLabel}`,
+        valor: perOutros, forma: 'Rateio', dentista_id: dentistaId, nota_fiscal: false,
+      })
+      inserts.push({
+        data: ultimoDia, tipo: 'receita', descricao: `Rateio de ${dentistaNome} – ${mesLabel}`,
+        valor: perOutros, forma: 'Rateio', dentista_id: outroId, nota_fiscal: false,
+      })
+    }
+
+    if (inserts.length > 0) {
+      const { error } = await supabase.from('lancamentos').insert(inserts)
+      if (error) { setErroFechamento(error.message); setFechandoMes(false); return }
+    }
+
+    setFechandoMes(false)
+    setModalFecharMes(false)
+    setRefreshKey(k => k + 1)
+  }
+
   const totalPago       = pagamentos.reduce((s, p) => s + p.valor, 0)
   const receitas        = lancamentos.filter(l => l.tipo === 'receita')
   const despesas        = lancamentos.filter(l => l.tipo === 'despesa')
@@ -233,7 +338,8 @@ export default function DentistaFinanceiroPage() {
   const totalDesp       = despesas.reduce((s, l) => s + l.valor, 0)
   const totalRepasses   = Object.values(repasses).flat().reduce((s, r) => s + r.valor, 0)
   const totalRecebidos  = repassesRecebidos.reduce((s, r) => s + r.valor, 0)
-  const saldoLiquido    = totalRec + totalRecebidos - totalDesp - totalRepasses
+  const totalDespResp   = despesasResponsavel.reduce((s, l) => s + l.valor, 0)
+  const saldoLiquido    = totalRec + totalRecebidos - totalDesp - totalRepasses - totalDespResp
 
   const porForma = FORMAS.map(forma => {
     const movs = receitas.filter(l => l.forma === forma)
@@ -291,13 +397,22 @@ export default function DentistaFinanceiroPage() {
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M9 18l6-6-6-6"/></svg>
           </button>
         </div>
-        <div className="flex gap-1 rounded-lg p-1 border border-[var(--border)]" style={{ backgroundColor: 'var(--surface-muted)' }}>
-          {(['mes', 'ano'] as Periodo[]).map(p => (
-            <button key={p} onClick={() => setPeriodo(p)}
-              className={`px-3 py-1 text-xs rounded-md transition-colors ${periodo === p ? 'bg-[var(--surface)] text-[var(--text-1)] font-medium' : 'text-[var(--text-2)] hover:text-[var(--text-1)]'}`}>
-              {p === 'mes' ? 'Mensal' : 'Anual'}
+        <div className="flex items-center gap-2">
+          {podeEditar && periodo === 'mes' && (
+            <button onClick={abrirFecharMes}
+              className="btn-secondary px-3 py-1.5 text-xs flex items-center gap-1.5">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
+              Fechar Mês
             </button>
-          ))}
+          )}
+          <div className="flex gap-1 rounded-lg p-1 border border-[var(--border)]" style={{ backgroundColor: 'var(--surface-muted)' }}>
+            {(['mes', 'ano'] as Periodo[]).map(p => (
+              <button key={p} onClick={() => setPeriodo(p)}
+                className={`px-3 py-1 text-xs rounded-md transition-colors ${periodo === p ? 'bg-[var(--surface)] text-[var(--text-1)] font-medium' : 'text-[var(--text-2)] hover:text-[var(--text-1)]'}`}>
+                {p === 'mes' ? 'Mensal' : 'Anual'}
+              </button>
+            ))}
+          </div>
         </div>
       </div>
 
@@ -317,8 +432,10 @@ export default function DentistaFinanceiroPage() {
             </div>
             <div className="card-p5">
               <p className="card-label">Saídas</p>
-              <p className="card-value text-despesa">R$ {fmt(totalDesp + totalRepasses)}</p>
-              <p className="card-sub">{totalRepasses > 0 ? `R$ ${fmt(totalRepasses)} em repasses` : `${despesas.length} despesa(s)`}</p>
+              <p className="card-value text-despesa">R$ {fmt(totalDesp + totalRepasses + totalDespResp)}</p>
+              <p className="card-sub">
+                {totalDespResp > 0 ? `R$ ${fmt(totalDespResp)} atribuídas` : totalRepasses > 0 ? `R$ ${fmt(totalRepasses)} em repasses` : `${despesas.length} despesa(s)`}
+              </p>
             </div>
             <div className="card-p5">
               <p className="card-label">Saldo líquido</p>
@@ -412,6 +529,32 @@ export default function DentistaFinanceiroPage() {
                         <span className="text-sm font-medium text-receita ml-3 flex-shrink-0">+R$ {fmt(r.valor)}</span>
                       </div>
                     ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Despesas atribuídas (movimento diário) */}
+              {despesasResponsavel.length > 0 && (
+                <div className="mt-5">
+                  <h3 className="widget-title">Despesas Atribuídas</h3>
+                  <div className="flex flex-col gap-2">
+                    {despesasResponsavel.map(d => {
+                      const [a, m, dia] = d.data.split('-')
+                      return (
+                        <div key={d.id} className="flex items-center justify-between py-1.5 px-2 rounded"
+                          style={{ backgroundColor: 'var(--surface-muted)' }}>
+                          <div className="min-w-0 flex-1">
+                            <p className="text-xs font-medium truncate" style={{ color: 'var(--text-1)' }}>{d.descricao}</p>
+                            <p className="text-xs" style={{ color: 'var(--text-3)' }}>{dia}/{m}/{a}</p>
+                          </div>
+                          <span className="text-sm font-medium text-despesa ml-3 flex-shrink-0">-R$ {fmt(d.valor)}</span>
+                        </div>
+                      )
+                    })}
+                    <div className="flex justify-between items-center pt-1 mt-1" style={{ borderTop: '1px solid var(--border)' }}>
+                      <span className="text-xs" style={{ color: 'var(--text-3)' }}>Total atribuído</span>
+                      <span className="text-xs font-semibold text-despesa">-R$ {fmt(totalDespResp)}</span>
+                    </div>
                   </div>
                 </div>
               )}
@@ -768,6 +911,173 @@ export default function DentistaFinanceiroPage() {
             ano={ano}
             onImportado={() => setRefreshKey(k => k + 1)}
           />
+        </div>
+      )}
+
+      {/* ── Modal: Fechar Mês ── */}
+      {modalFecharMes && (
+        <div className="modal-overlay">
+          <div className="modal" style={{ maxWidth: '32rem' }}>
+            <div className="modal-header">
+              <h3 className="modal-title">
+                Fechar Mês — {dentistaNome} — {MESES[mes]}/{ano}
+              </h3>
+              <button onClick={() => setModalFecharMes(false)} className="nav-icon hover:text-red-400 transition-colors">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
+              </button>
+            </div>
+
+            {/* Modo */}
+            <div className="flex gap-2 mb-5">
+              {([
+                { key: 'rateio' as const, label: 'Com Rateio' },
+                { key: 'simples' as const, label: 'Pagamento Simples' },
+              ]).map(m => (
+                <button key={m.key} onClick={() => setModoFechamento(m.key)}
+                  className={`tipo-btn flex-1 ${modoFechamento === m.key ? 'bg-[var(--surface-muted)] border-[var(--border-hover)] text-[var(--text-1)] font-medium' : ''}`}>
+                  {m.label}
+                </button>
+              ))}
+            </div>
+
+            {/* Resumo base */}
+            <div className="rounded-xl p-4 mb-4 flex flex-col gap-2" style={{ backgroundColor: 'var(--surface-muted)' }}>
+              <div className="flex justify-between text-xs">
+                <span style={{ color: 'var(--text-3)' }}>Receitas</span>
+                <span className="text-receita">+ R$ {fmt(totalRec)}</span>
+              </div>
+              {totalRecebidos > 0 && (
+                <div className="flex justify-between text-xs">
+                  <span style={{ color: 'var(--text-3)' }}>Rep. recebidos</span>
+                  <span className="text-receita">+ R$ {fmt(totalRecebidos)}</span>
+                </div>
+              )}
+              {totalDesp > 0 && (
+                <div className="flex justify-between text-xs">
+                  <span style={{ color: 'var(--text-3)' }}>Despesas</span>
+                  <span className="text-despesa">- R$ {fmt(totalDesp)}</span>
+                </div>
+              )}
+              {totalRepasses > 0 && (
+                <div className="flex justify-between text-xs">
+                  <span style={{ color: 'var(--text-3)' }}>Rep. pagos</span>
+                  <span className="text-despesa">- R$ {fmt(totalRepasses)}</span>
+                </div>
+              )}
+              {totalDespResp > 0 && (
+                <div className="flex justify-between text-xs">
+                  <span style={{ color: 'var(--text-3)' }}>Desp. atribuídas</span>
+                  <span className="text-despesa">- R$ {fmt(totalDespResp)}</span>
+                </div>
+              )}
+              <div className="flex justify-between text-sm font-semibold pt-2" style={{ borderTop: '1px solid var(--border)' }}>
+                <span style={{ color: 'var(--text-2)' }}>Base de cálculo</span>
+                <span className={saldoLiquido >= 0 ? 'text-receita' : 'text-despesa'}>R$ {fmt(saldoLiquido)}</span>
+              </div>
+            </div>
+
+            {/* Modo: Rateio */}
+            {modoFechamento === 'rateio' && configRateio && (
+              <div className="flex flex-col gap-4">
+                <div className="rounded-xl p-4" style={{ border: '1px solid var(--border)' }}>
+                  <p className="text-xs font-semibold uppercase tracking-widest mb-3" style={{ color: 'var(--text-3)' }}>Distribuição</p>
+                  <div className="flex flex-col gap-2">
+                    <div className="flex justify-between items-center">
+                      <span className="text-xs" style={{ color: 'var(--text-2)' }}>
+                        {dentistaNome} retém ({configRateio.percentual_dentista}%)
+                      </span>
+                      <span className="text-sm font-semibold text-receita">
+                        R$ {fmt(Math.max(0, saldoLiquido * configRateio.percentual_dentista / 100))}
+                      </span>
+                    </div>
+                    {configRateio.marco_dentista_id && configRateio.marco_dentista_id !== dentistaId && (
+                      <div className="flex justify-between items-center">
+                        <span className="text-xs" style={{ color: 'var(--text-2)' }}>
+                          Marco Bianchini ({configRateio.percentual_marco}%)
+                        </span>
+                        <span className="text-sm font-medium text-despesa">
+                          R$ {fmt(Math.max(0, saldoLiquido * configRateio.percentual_marco / 100))}
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* Outros dentistas */}
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-widest mb-2" style={{ color: 'var(--text-3)' }}>
+                    Outros dentistas — {configRateio.percentual_outros}% = R$ {fmt(Math.max(0, saldoLiquido * configRateio.percentual_outros / 100))}
+                    {selecionadosRateio.length > 0 && ` (R$ ${fmt(Math.max(0, saldoLiquido * configRateio.percentual_outros / 100) / selecionadosRateio.length)} cada)`}
+                  </p>
+                  <div className="flex flex-col gap-2">
+                    {listaDentistas.filter(d => d.id !== dentistaId).map(d => (
+                      <label key={d.id} className="flex items-center gap-3 cursor-pointer select-none py-1.5 px-3 rounded-lg transition-colors"
+                        style={{ backgroundColor: selecionadosRateio.includes(d.id) ? 'var(--accent-soft)' : 'transparent' }}>
+                        <input
+                          type="checkbox"
+                          checked={selecionadosRateio.includes(d.id)}
+                          onChange={() => setSelecionadosRateio(prev =>
+                            prev.includes(d.id) ? prev.filter(id => id !== d.id) : [...prev, d.id]
+                          )}
+                          className="w-4 h-4 accent-emerald-500"
+                        />
+                        <span className="text-sm flex-1" style={{ color: 'var(--text-1)' }}>{d.nome}</span>
+                        {selecionadosRateio.includes(d.id) && selecionadosRateio.length > 0 && (
+                          <span className="text-xs text-despesa">
+                            -R$ {fmt(Math.max(0, saldoLiquido * configRateio.percentual_outros / 100) / selecionadosRateio.length)}
+                          </span>
+                        )}
+                      </label>
+                    ))}
+                  </div>
+                </div>
+
+                {!configRateio.marco_dentista_id && (
+                  <p className="text-xs text-amber-400">
+                    Marco Bianchini não está configurado em Administração → Configurações.
+                  </p>
+                )}
+              </div>
+            )}
+
+            {/* Modo: Simples */}
+            {modoFechamento === 'simples' && (
+              <div className="rounded-xl p-4" style={{ backgroundColor: 'var(--surface-muted)' }}>
+                <p className="text-sm font-medium mb-2" style={{ color: 'var(--text-1)' }}>
+                  Valor a pagar ao dentista
+                </p>
+                <p className="text-2xl font-bold text-receita mb-2">R$ {fmt(Math.max(saldoLiquido, 0))}</p>
+                <p className="text-xs" style={{ color: 'var(--text-3)' }}>
+                  No modo simples o pagamento é registrado diretamente sem distribuição de rateio.
+                  Utilize o botão "Novo Pagamento" na seção de pagamentos abaixo.
+                </p>
+              </div>
+            )}
+
+            {erroFechamento && <p className="text-xs text-red-400 mt-3">{erroFechamento}</p>}
+
+            <div className="flex gap-2 mt-5">
+              <button onClick={() => setModalFecharMes(false)} className="btn-secondary flex-1 py-2">Cancelar</button>
+              {modoFechamento === 'rateio' ? (
+                <button
+                  onClick={confirmarFechamento}
+                  disabled={fechandoMes || saldoLiquido <= 0}
+                  className="btn-primary flex-1 py-2">
+                  {fechandoMes ? 'Processando...' : 'Confirmar Fechamento'}
+                </button>
+              ) : (
+                <button
+                  onClick={() => {
+                    setModalFecharMes(false)
+                    setFormPag({ valor: String(Math.max(saldoLiquido, 0).toFixed(2)), forma: 'Pix', descricao: `Pagamento ${MESES[mes]}/${ano}`, data: new Date().toISOString().slice(0, 10) })
+                    setModalPagamento(true)
+                  }}
+                  className="btn-primary flex-1 py-2">
+                  Registrar Pagamento
+                </button>
+              )}
+            </div>
+          </div>
         </div>
       )}
     </div>
