@@ -2,7 +2,9 @@
 
 import { useState, useEffect } from 'react'
 import Link from 'next/link'
+import { useRouter } from 'next/navigation'
 import { supabase } from '@/lib/supabase'
+import { useSession } from '@/app/dashboard/SessionProvider'
 
 type UltimoLancamento = {
   id: string
@@ -23,7 +25,13 @@ function toISO(d: Date) {
 }
 
 export default function DashboardPage() {
+  const session = useSession()
+  const router  = useRouter()
   const hoje = new Date()
+
+  useEffect(() => {
+    if (session?.role === 'recepcao') router.replace('/dashboard/movimento-diario')
+  }, [session?.role])
   const iniciomes = `${hoje.getFullYear()}-${String(hoje.getMonth() + 1).padStart(2, '0')}-01`
   const fimMes = toISO(new Date(hoje.getFullYear(), hoje.getMonth() + 1, 0))
 
