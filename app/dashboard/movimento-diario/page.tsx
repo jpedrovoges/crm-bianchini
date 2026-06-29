@@ -319,11 +319,12 @@ export default function MovimentoDiarioPage() {
     const dentista      = l.tipo === 'receita' ? (listaDentistas.find(d => d.id === l.dentista_id)?.nome ?? null) : null
     const dentResp      = l.tipo === 'despesa' ? (l.dentistas_responsavel?.nome ?? null) : null
     return (
-      <div className="movimento-item">
-        <div className={l.tipo === 'receita' ? 'dot-receita' : 'dot-despesa'} />
-        <div className="flex-1 min-w-0">
-          <p className="mov-desc">{l.descricao}</p>
-          <p className="mov-meta">
+      <div className="rounded-lg border transition-colors flex items-center gap-3 px-3"
+        style={{ borderColor: 'var(--border)', backgroundColor: 'var(--surface)', minHeight: '2rem' }}>
+        <div className={`flex-shrink-0 ${l.tipo === 'receita' ? 'dot-receita' : 'dot-despesa'}`} />
+        <div className="flex-1 min-w-0 py-2">
+          <p className="text-sm truncate" style={{ color: 'var(--text-1)' }}>{l.descricao}</p>
+          <p className="text-xs truncate" style={{ color: 'var(--text-2)' }}>
             {l.forma}
             {dentista ? ` · ${dentista}` : ''}
             {dentResp ? ` · Resp: ${dentResp}` : ''}
@@ -337,8 +338,8 @@ export default function MovimentoDiarioPage() {
           {l.tipo === 'receita' ? '+' : '-'} R$ {fmt(l.valor)}
         </p>
         {onRemove && !confirmando && (
-          <button onClick={onConfirmar} className="nav-icon hover:text-red-400 transition-colors flex-shrink-0" title="Excluir lançamento">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+          <button onClick={onConfirmar} className="nav-icon hover:text-red-400 transition-colors flex-shrink-0">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
               <polyline points="3 6 5 6 21 6"/>
               <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/>
             </svg>
