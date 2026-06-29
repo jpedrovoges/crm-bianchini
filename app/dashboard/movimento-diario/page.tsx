@@ -127,7 +127,7 @@ export default function MovimentoDiarioPage() {
   useEffect(() => {
     if (visao !== 'diario' || !diaSelecionado) return
     supabase.from('lancamentos')
-      .select('*, pacientes(nome), destinatarios(nome, tipo), dentistas:dentistas!dentista_id(nome), dentistas_responsavel:dentistas!dentista_responsavel_id(nome)')
+      .select('*, pacientes(nome), destinatarios(nome, tipo), dentistas_responsavel:dentistas!dentista_responsavel_id(nome)')
       .eq('data', toISO(ano, mes, diaSelecionado))
       .order('created_at')
       .then(({ data }) => { if (data) setLancamentosDia(data as Lancamento[]) })
@@ -139,7 +139,7 @@ export default function MovimentoDiarioPage() {
     const inicio = toISO(ano, mes, 1)
     const fim    = toISO(ano, mes, new Date(ano, mes + 1, 0).getDate())
     supabase.from('lancamentos')
-      .select('*, pacientes(nome), destinatarios(nome, tipo), dentistas:dentistas!dentista_id(nome), dentistas_responsavel:dentistas!dentista_responsavel_id(nome)')
+      .select('*, pacientes(nome), destinatarios(nome, tipo), dentistas_responsavel:dentistas!dentista_responsavel_id(nome)')
       .gte('data', inicio).lte('data', fim)
       .order('data').order('created_at')
       .then(({ data }) => { if (data) setLancamentosMes(data as Lancamento[]) })
@@ -201,7 +201,7 @@ export default function MovimentoDiarioPage() {
 
     const dataHoje = toISO(ano, mes, diaSelecionado)
     const { data: novo } = await supabase.from('lancamentos')
-      .select('*, pacientes(nome), destinatarios(nome, tipo), dentistas:dentistas!dentista_id(nome), dentistas_responsavel:dentistas!dentista_responsavel_id(nome)')
+      .select('*, pacientes(nome), destinatarios(nome, tipo), dentistas_responsavel:dentistas!dentista_responsavel_id(nome)')
       .eq('data', dataHoje).order('created_at')
     if (novo) setLancamentosDia(novo as Lancamento[])
 
@@ -316,7 +316,7 @@ export default function MovimentoDiarioPage() {
   }) {
     const vinculo       = l.tipo === 'receita' ? (l.pacientes?.nome ?? null) : (l.destinatarios?.nome ?? null)
     const catLabel      = l.categoria === 'venda' ? 'Venda' : l.categoria === 'procedimento' ? 'Procedimento' : null
-    const dentista      = l.tipo === 'receita' ? (l.dentistas?.nome ?? null) : null
+    const dentista      = l.tipo === 'receita' ? (listaDentistas.find(d => d.id === l.dentista_id)?.nome ?? null) : null
     const dentResp      = l.tipo === 'despesa' ? (l.dentistas_responsavel?.nome ?? null) : null
     return (
       <div className="movimento-item">
