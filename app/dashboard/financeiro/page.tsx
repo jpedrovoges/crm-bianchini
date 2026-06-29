@@ -38,7 +38,7 @@ function toISO(ano: number, mes: number, dia: number) {
 const ABAS: { key: AbaFinanceiro; label: string }[] = [
   { key: 'lancamentos',    label: 'Lançamentos'     },
   { key: 'despesas-comuns', label: 'Despesas Comuns' },
-  { key: 'dentistas',      label: 'Por Dentista'    },
+  { key: 'dentistas',      label: 'Dentistas'    },
   { key: 'nf-a-fazer',    label: 'NF a Fazer'      },
   { key: 'notas-fiscais', label: 'Notas Fiscais'    },
 ]
