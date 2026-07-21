@@ -111,6 +111,8 @@ export default function DespesasComuns() {
     itens: ativas.filter(d => d.categoria_id === cat.id),
   })).filter(c => c.itens.length > 0)
 
+  const totalAvulsas = avulsas.reduce((s, l) => s + l.valor, 0)
+
   const totalPorDentista = participantes.map(d => {
     const previsto = ativas
       .filter(dep => dep.valor)
@@ -120,7 +122,8 @@ export default function DespesasComuns() {
         const dep = despesas.find(x => x.id === l.despesa_comum_id)
         return dep ? sum + l.valor / nPart : sum
       }, 0)
-    return { dentista: d, previsto, lancado }
+    const parcelaAvulsas = nPart > 0 ? Math.round(totalAvulsas / nPart * 100) / 100 : 0
+    return { dentista: d, previsto, lancado: lancado + parcelaAvulsas }
   })
 
   function abrirLancar(d: DespesaComum) {
@@ -174,11 +177,9 @@ export default function DespesasComuns() {
   }
 
   async function fecharMes() {
-    if (participantes.length === 0) return
+    if (participantes.length === 0 || lancamentos.length === 0) return
     setFechando(true)
-    const totalConfiguradas = lancamentos.reduce((s, l) => s + l.valor, 0)
-    const totalAvulsas      = avulsas.reduce((s, l) => s + l.valor, 0)
-    const totalMes          = totalConfiguradas + totalAvulsas
+    const totalMes = lancamentos.reduce((s, l) => s + l.valor, 0)
     if (totalMes === 0) { setFechando(false); return }
     const share     = Math.round(totalMes / nPart * 100) / 100
     const ultimoDia = new Date(ano, mes + 1, 0).getDate()
@@ -223,7 +224,7 @@ export default function DespesasComuns() {
               + Nova Despesa
             </button>
           )}
-          {modo === 'mensal' && (lancamentos.length > 0 || avulsas.length > 0) && nPart > 0 && (
+          {modo === 'mensal' && lancamentos.length > 0 && nPart > 0 && (
             confirmandoFechamento ? (
               <div className="flex gap-2 items-center">
                 <span className="text-xs" style={{ color: 'var(--text-3)' }}>Distribuir para {nPart} dentista(s)?</span>
@@ -275,27 +276,35 @@ export default function DespesasComuns() {
             <div className="card-p5 mb-5">
               <h2 className="widget-title">Despesas do Movimento Diário</h2>
               <p className="text-xs mb-3" style={{ color: 'var(--text-3)' }}>
-                Despesas lançadas sem dentista — entram no rateio.
+                Despesas lançadas sem dentista — já divididas entre {nPart} dentista(s).
               </p>
               <div className="flex flex-col gap-2">
                 {avulsas.map(l => {
                   const [a, m, d] = l.data.split('-')
+                  const parcela   = nPart > 0 ? Math.round(l.valor / nPart * 100) / 100 : l.valor
                   return (
                     <div key={l.id} className="movimento-item">
                       <div className="dot-despesa" />
                       <div className="flex-1 min-w-0">
                         <p className="mov-desc">{l.descricao}</p>
-                        <p className="mov-meta">{d}/{m}/{a} · {l.forma}</p>
+                        <p className="mov-meta">
+                          {d}/{m}/{a} · {l.forma}
+                          {nPart > 0 && ` · R$ ${fmt(parcela)} por dentista`}
+                        </p>
                       </div>
                       <p className="text-sm font-medium text-despesa flex-shrink-0">R$ {fmt(l.valor)}</p>
+                      <span className="text-xs px-2 py-1 rounded-full flex-shrink-0"
+                        style={{ backgroundColor: 'var(--surface-muted)', color: 'var(--text-3)' }}>
+                        Lançado ✓
+                      </span>
                     </div>
                   )
                 })}
                 <div className="flex justify-between items-center pt-2 mt-1" style={{ borderTop: '1px solid var(--border)' }}>
-                  <span className="text-xs" style={{ color: 'var(--text-3)' }}>Subtotal avulsas</span>
-                  <span className="text-sm font-semibold text-despesa">
-                    R$ {fmt(avulsas.reduce((s, l) => s + l.valor, 0))}
+                  <span className="text-xs" style={{ color: 'var(--text-3)' }}>
+                    Total · R$ {fmt(nPart > 0 ? Math.round(totalAvulsas / nPart * 100) / 100 : 0)} por dentista
                   </span>
+                  <span className="text-sm font-semibold text-despesa">R$ {fmt(totalAvulsas)}</span>
                 </div>
               </div>
             </div>
