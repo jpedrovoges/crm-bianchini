@@ -18,7 +18,8 @@ type DespesaComum = {
   ativo: boolean
 }
 
-type LancRef = { id: string; data: string; valor: number; despesa_comum_id: string }
+type LancRef    = { id: string; data: string; valor: number; despesa_comum_id: string }
+type LancAvulsa = { id: string; data: string; descricao: string; valor: number; forma: string }
 
 function fmt(v: number) {
   return v.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
@@ -41,6 +42,7 @@ export default function DespesasComuns() {
   const [categorias, setCategorias] = useState<Categoria[]>([])
   const [despesas, setDespesas]     = useState<DespesaComum[]>([])
   const [lancamentos, setLancamentos] = useState<LancRef[]>([])
+  const [avulsas, setAvulsas]         = useState<LancAvulsa[]>([])
   const [loading, setLoading]       = useState(true)
 
   const [modal, setModal]           = useState(false)
@@ -71,11 +73,23 @@ export default function DespesasComuns() {
   useEffect(() => {
     const inicio = toISO(ano, mes, 1)
     const fim    = toISO(ano, mes, new Date(ano, mes + 1, 0).getDate())
-    supabase.from('lancamentos')
-      .select('id, data, valor, despesa_comum_id')
-      .not('despesa_comum_id', 'is', null)
-      .gte('data', inicio).lte('data', fim)
-      .then(({ data }) => { if (data) setLancamentos(data as LancRef[]) })
+    Promise.all([
+      supabase.from('lancamentos')
+        .select('id, data, valor, despesa_comum_id')
+        .not('despesa_comum_id', 'is', null)
+        .gte('data', inicio).lte('data', fim),
+      supabase.from('lancamentos')
+        .select('id, data, descricao, valor, forma')
+        .eq('tipo', 'despesa')
+        .is('dentista_id', null)
+        .is('dentista_responsavel_id', null)
+        .is('despesa_comum_id', null)
+        .gte('data', inicio).lte('data', fim)
+        .order('data', { ascending: false }),
+    ]).then(([{ data: lanc }, { data: av }]) => {
+      if (lanc) setLancamentos(lanc as LancRef[])
+      if (av)   setAvulsas(av as LancAvulsa[])
+    })
   }, [mes, ano])
 
   function mesAnterior() { if (mes === 0) { setMes(11); setAno(a => a - 1) } else setMes(m => m - 1) }
@@ -160,12 +174,15 @@ export default function DespesasComuns() {
   }
 
   async function fecharMes() {
-    if (participantes.length === 0 || lancamentos.length === 0) return
+    if (participantes.length === 0) return
     setFechando(true)
-    const totalMes = lancamentos.reduce((s, l) => s + l.valor, 0)
-    const share    = totalMes / nPart
+    const totalConfiguradas = lancamentos.reduce((s, l) => s + l.valor, 0)
+    const totalAvulsas      = avulsas.reduce((s, l) => s + l.valor, 0)
+    const totalMes          = totalConfiguradas + totalAvulsas
+    if (totalMes === 0) { setFechando(false); return }
+    const share     = Math.round(totalMes / nPart * 100) / 100
     const ultimoDia = new Date(ano, mes + 1, 0).getDate()
-    const data = toISO(ano, mes, ultimoDia)
+    const data      = toISO(ano, mes, ultimoDia)
     const descricao = `Despesas Comuns - ${MESES[mes]}/${ano}`
     await Promise.all(
       participantes.map(d =>
@@ -206,7 +223,7 @@ export default function DespesasComuns() {
               + Nova Despesa
             </button>
           )}
-          {modo === 'mensal' && lancamentos.length > 0 && nPart > 0 && (
+          {modo === 'mensal' && (lancamentos.length > 0 || avulsas.length > 0) && nPart > 0 && (
             confirmandoFechamento ? (
               <div className="flex gap-2 items-center">
                 <span className="text-xs" style={{ color: 'var(--text-3)' }}>Distribuir para {nPart} dentista(s)?</span>
@@ -253,12 +270,43 @@ export default function DespesasComuns() {
             </div>
           )}
 
-          {porCategoria.length === 0 ? (
+          {/* Despesas avulsas do movimento diário */}
+          {avulsas.length > 0 && (
+            <div className="card-p5 mb-5">
+              <h2 className="widget-title">Despesas do Movimento Diário</h2>
+              <p className="text-xs mb-3" style={{ color: 'var(--text-3)' }}>
+                Despesas lançadas sem dentista — entram no rateio.
+              </p>
+              <div className="flex flex-col gap-2">
+                {avulsas.map(l => {
+                  const [a, m, d] = l.data.split('-')
+                  return (
+                    <div key={l.id} className="movimento-item">
+                      <div className="dot-despesa" />
+                      <div className="flex-1 min-w-0">
+                        <p className="mov-desc">{l.descricao}</p>
+                        <p className="mov-meta">{d}/{m}/{a} · {l.forma}</p>
+                      </div>
+                      <p className="text-sm font-medium text-despesa flex-shrink-0">R$ {fmt(l.valor)}</p>
+                    </div>
+                  )
+                })}
+                <div className="flex justify-between items-center pt-2 mt-1" style={{ borderTop: '1px solid var(--border)' }}>
+                  <span className="text-xs" style={{ color: 'var(--text-3)' }}>Subtotal avulsas</span>
+                  <span className="text-sm font-semibold text-despesa">
+                    R$ {fmt(avulsas.reduce((s, l) => s + l.valor, 0))}
+                  </span>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {porCategoria.length === 0 && avulsas.length === 0 ? (
             <div className="empty-state">
               <p className="page-subtitle text-sm">Nenhuma despesa comum configurada</p>
               <button onClick={() => setModo('config')} className="btn-secondary px-3 py-1.5 text-xs mt-3">Configurar</button>
             </div>
-          ) : (
+          ) : porCategoria.length > 0 ? (
             <div className="flex flex-col gap-5">
               {porCategoria.map(cat => (
                 <div key={cat.id} className="card-p5">
@@ -325,7 +373,7 @@ export default function DespesasComuns() {
                 </div>
               ))}
             </div>
-          )}
+          ) : null}
         </>
       )}
 
