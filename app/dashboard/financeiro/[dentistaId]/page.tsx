@@ -141,6 +141,9 @@ export default function DentistaFinanceiroPage() {
   const [labTotal, setLabTotal] = useState('')
   const [fechandoMes, setFechandoMes] = useState(false)
   const [erroFechamento, setErroFechamento] = useState<string | null>(null)
+  const [despGeraisMes, setDespGeraisMes]             = useState(0)
+  const [nParticipantesRateio, setNParticipantesRateio] = useState(0)
+  const [parcDespGerais, setParcDespGerais]             = useState(0)
 
   useEffect(() => {
     supabase.from('dentistas').select('nome').eq('id', dentistaId).single()
@@ -288,10 +291,36 @@ export default function DentistaFinanceiroPage() {
     setErroFechamento(null)
     setLabTotal('')
     setParticipaRateioModal(participaRateio)
-    const { data: cfgRateio } = await supabase.from('configuracoes_rateio').select('*').limit(1).single()
-    if (cfgRateio) {
-      setConfigRateio({ ...cfgRateio, dentistas_rateio: (cfgRateio.dentistas_rateio as string[]) ?? [] } as ConfigRateio)
+
+    const inicioMes = toISO(ano, mes, 1)
+    const fimMes    = toISO(ano, mes, new Date(ano, mes + 1, 0).getDate())
+
+    const [cfgRateioRes, despGeraisRes, ativosRes, naoParticipamRes] = await Promise.all([
+      supabase.from('configuracoes_rateio').select('*').limit(1).single(),
+      supabase.from('lancamentos')
+        .select('valor')
+        .eq('tipo', 'despesa')
+        .is('dentista_id', null)
+        .is('dentista_responsavel_id', null)
+        .gte('data', inicioMes).lte('data', fimMes),
+      supabase.from('dentistas').select('id', { count: 'exact', head: true }).eq('ativo', true),
+      supabase.from('configuracoes_dentistas').select('dentista_id', { count: 'exact', head: true }).eq('participa_rateio', false),
+    ])
+
+    if (cfgRateioRes.data) {
+      setConfigRateio({ ...cfgRateioRes.data, dentistas_rateio: (cfgRateioRes.data.dentistas_rateio as string[]) ?? [] } as ConfigRateio)
     }
+
+    const totalDesp  = (despGeraisRes.data ?? []).reduce((s: number, l: { valor: number }) => s + l.valor, 0)
+    const nAtivos    = ativosRes.count ?? 0
+    const nNaoPartic = naoParticipamRes.count ?? 0
+    const nParticip  = Math.max(1, nAtivos - nNaoPartic)
+    const parc       = participaRateio && totalDesp > 0 ? Math.round(totalDesp / nParticip * 100) / 100 : 0
+
+    setDespGeraisMes(totalDesp)
+    setNParticipantesRateio(nParticip)
+    setParcDespGerais(parc)
+
     setModalFecharMes(true)
   }
 
@@ -307,7 +336,7 @@ export default function DentistaFinanceiroPage() {
     const baseComissao  = Math.max(0, totalRec - totalImpostos - labVal)
     const totalComissao = comRateio ? Math.round(baseComissao * COMISSAO_MARCO_PCT / 100 * 100) / 100 : 0
     const aReceber      = Math.round((totalRec - totalImpostos - labVal - totalComissao) * 100) / 100
-    const liquido       = Math.round((aReceber + totalRecebidos - totalDespResp) * 100) / 100
+    const liquido       = Math.round((aReceber + totalRecebidos - totalDespResp - parcDespGerais) * 100) / 100
     return { totalImpostos, totalComissao, aReceber, liquido, baseComissao }
   }
 
@@ -352,6 +381,15 @@ export default function DentistaFinanceiroPage() {
         descricao: `Comissão de ${dentistaNome} – ${mesLabel}`,
         valor: calc.totalComissao, forma: 'Rateio',
         dentista_id: configRateio.marco_dentista_id, nota_fiscal: false,
+      })
+    }
+
+    if (parcDespGerais > 0) {
+      inserts.push({
+        data: ultimoDia, tipo: 'despesa',
+        descricao: `Despesas Gerais (rateio ${nParticipantesRateio} dentistas) – ${mesLabel}`,
+        valor: parcDespGerais, forma: 'Rateio',
+        dentista_id: dentistaId, nota_fiscal: false,
       })
     }
 
@@ -617,7 +655,7 @@ export default function DentistaFinanceiroPage() {
               )}
             </div>
 
-            {/* Lançamentos por data */}
+            {/* Lançamentos data */}
             <div className="lg:col-span-2 card-p5 flex flex-col" style={{ maxHeight: '32rem' }}>
               <h2 className="widget-title flex-shrink-0">Lançamentos do Período</h2>
               {lancamentos.length === 0 ? (
@@ -975,7 +1013,7 @@ export default function DentistaFinanceiroPage() {
       {modalFecharMes && (() => {
         const labVal  = parseFloat(labTotal) || 0
         const calc    = calcFechamento(labVal, participaRateioModal)
-        const semNada = calc.totalImpostos === 0 && calc.totalComissao === 0 && labVal === 0
+        const semNada = calc.totalImpostos === 0 && calc.totalComissao === 0 && labVal === 0 && parcDespGerais === 0
         return (
           <div className="modal-overlay">
             <div className="modal" style={{ maxWidth: '34rem' }}>
@@ -1055,7 +1093,7 @@ export default function DentistaFinanceiroPage() {
               </div>
 
               {/* Ajustes */}
-              {(totalRecebidos > 0 || totalDespResp > 0) && (
+              {(totalRecebidos > 0 || totalDespResp > 0 || parcDespGerais > 0) && (
                 <div className="rounded-xl p-4 mb-4 flex flex-col gap-2" style={{ border: '1px solid var(--border)' }}>
                   <p className="text-xs font-semibold uppercase tracking-widest mb-1" style={{ color: 'var(--text-3)' }}>
                     Ajustes
@@ -1070,6 +1108,14 @@ export default function DentistaFinanceiroPage() {
                     <div className="flex justify-between text-xs">
                       <span style={{ color: 'var(--text-2)' }}>Despesas atribuídas</span>
                       <span className="text-despesa">− R$ {fmt(totalDespResp)}</span>
+                    </div>
+                  )}
+                  {parcDespGerais > 0 && (
+                    <div className="flex justify-between text-xs">
+                      <span style={{ color: 'var(--text-2)' }}>
+                        Despesas gerais — parcela (R$ {fmt(despGeraisMes)} ÷ {nParticipantesRateio})
+                      </span>
+                      <span className="text-despesa">− R$ {fmt(parcDespGerais)}</span>
                     </div>
                   )}
                   <div className="flex justify-between text-sm font-semibold pt-2" style={{ borderTop: '1px solid var(--border)' }}>
@@ -1090,6 +1136,9 @@ export default function DentistaFinanceiroPage() {
                   )}
                   {calc.totalComissao > 0 && (!configRateio?.marco_dentista_id || configRateio.marco_dentista_id === dentistaId) && (
                     <p className="text-amber-400">Marco Bianchini não configurado em Administração → Configurações.</p>
+                  )}
+                  {parcDespGerais > 0 && (
+                    <p>• Despesas gerais: R$ {fmt(parcDespGerais)} (1/{nParticipantesRateio} de R$ {fmt(despGeraisMes)} em despesas gerais do mês)</p>
                   )}
                   {semNada && <p>Nenhum lançamento a gerar.</p>}
                 </div>
