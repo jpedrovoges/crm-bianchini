@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from 'react'
 import { supabase } from '@/lib/supabase'
+import { formatarNome } from '@/lib/formatarNome'
 
 type Dentista = { id: string; nome: string; ativo: boolean }
 
@@ -150,7 +151,7 @@ export default function DentistasPage() {
             <div className="flex flex-col gap-3">
               <div>
                 <label className="form-label">Nome completo <span className="text-red-400">*</span></label>
-                <input type="text" value={nome} onChange={e => setNome(e.target.value)}
+                <input type="text" value={nome} onChange={e => setNome(formatarNome(e.target.value))}
                   placeholder="Ex: Dr. Carlos" className="form-input" autoFocus />
               </div>
             </div>

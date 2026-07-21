@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from 'react'
 import { supabase } from '@/lib/supabase'
+import { formatarNome, formatarCpf } from '@/lib/formatarNome'
 
 type Paciente = {
   id: string
@@ -200,13 +201,13 @@ export default function PacientesPage() {
               <p className="text-xs font-semibold uppercase tracking-widest" style={{ color: 'var(--text-3)' }}>Dados pessoais</p>
               <div>
                 <label className="form-label">Nome completo <span className="text-red-400">*</span></label>
-                <input type="text" value={form.nome} onChange={e => setForm(f => ({ ...f, nome: e.target.value }))}
+                <input type="text" value={form.nome} onChange={e => setForm(f => ({ ...f, nome: formatarNome(e.target.value) }))}
                   placeholder="Ex: José Silva" className="form-input" autoFocus />
               </div>
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="form-label">CPF</label>
-                  <input type="text" value={form.cpf} onChange={e => setForm(f => ({ ...f, cpf: e.target.value }))}
+                  <input type="text" value={form.cpf} onChange={e => setForm(f => ({ ...f, cpf: formatarCpf(e.target.value) }))} maxLength={14} inputMode="numeric"
                     placeholder="000.000.000-00" className="form-input" />
                 </div>
                 <div>
