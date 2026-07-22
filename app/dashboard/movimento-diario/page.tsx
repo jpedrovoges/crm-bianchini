@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from 'react'
 import { supabase } from '@/lib/supabase'
+import { useSession } from '@/app/dashboard/SessionProvider'
 
 const MESES = ['Janeiro','Fevereiro','Março','Abril','Maio','Junho','Julho','Agosto','Setembro','Outubro','Novembro','Dezembro']
 const DIAS_SEMANA = ['Dom','Seg','Ter','Qua','Qui','Sex','Sáb']
@@ -102,9 +103,13 @@ export default function MovimentoDiarioPage() {
   const [formDestinatario, setFormDestinatario]     = useState({ nome: '', tipo: 'dentista' as 'dentista' | 'empresa' })
   const [salvandoDestinatario, setSalvandoDestinatario] = useState(false)
 
-  // confirmação de exclusão
+  // edição e confirmação de exclusão
+  const [editandoId, setEditandoId]       = useState<string | null>(null)
   const [confirmandoId, setConfirmandoId] = useState<string | null>(null)
   const [confirmarLimparDia, setConfirmarLimparDia] = useState(false)
+
+  const session    = useSession()
+  const podeEditar = session?.role === 'admin' || session?.role === 'gestor'
 
   useEffect(() => {
     supabase.from('pacientes').select('id, nome').order('nome')
@@ -164,9 +169,57 @@ export default function MovimentoDiarioPage() {
   }
 
   // ── CRUD ──
+  function abrirEdicao(l: Lancamento) {
+    setErro(null)
+    setEditandoId(l.id)
+    setForm({
+      tipo:                    l.tipo,
+      descricao:               l.descricao,
+      valor:                   String(l.valor),
+      forma:                   l.forma,
+      paciente_id:             l.paciente_id ?? '',
+      destinatario_id:         l.destinatario_id ?? '',
+      dentista_id:             l.dentista_id ?? '',
+      dentista_responsavel_id: l.dentista_responsavel_id ?? '',
+      parcelas:                '1',
+      nota_fiscal:             l.nota_fiscal,
+      numero_nf:               l.numero_nf ?? '',
+      categoria:               (l.categoria as 'venda' | 'procedimento') ?? 'procedimento',
+      observacao:              l.observacao ?? '',
+    })
+    setModal(true)
+  }
+
   async function salvar() {
     if (!form.descricao || !form.valor || !diaSelecionado) return
     setSalvando(true); setErro(null)
+
+    if (editandoId) {
+      const despComDentista = form.tipo === 'despesa' && !!form.dentista_responsavel_id
+      const payload = {
+        tipo:                    form.tipo,
+        descricao:               form.descricao,
+        valor:                   parseFloat(form.valor),
+        forma:                   despComDentista ? 'Desconto' : form.forma,
+        paciente_id:             form.tipo === 'receita' ? (form.paciente_id || null) : null,
+        destinatario_id:         form.tipo === 'despesa' && !despComDentista ? (form.destinatario_id || null) : null,
+        nota_fiscal:             form.tipo === 'receita' ? form.nota_fiscal : false,
+        numero_nf:               form.tipo === 'receita' && form.nota_fiscal && form.numero_nf.trim() ? form.numero_nf.trim() : null,
+        categoria:               form.tipo === 'receita' ? form.categoria : null,
+        observacao:              form.tipo === 'receita' && form.categoria === 'procedimento' && form.observacao.trim() ? form.observacao.trim() : null,
+        dentista_id:             form.tipo === 'receita' ? (form.dentista_id || null) : null,
+        dentista_responsavel_id: despComDentista ? form.dentista_responsavel_id : null,
+      }
+      const { error } = await supabase.from('lancamentos').update(payload).eq('id', editandoId)
+      if (error) { setErro(error.message); setSalvando(false); return }
+      const dataHoje = toISO(ano, mes, diaSelecionado)
+      const { data: atualizado } = await supabase.from('lancamentos')
+        .select('*, pacientes(nome), destinatarios(nome, tipo), dentistas_responsavel:dentistas!dentista_responsavel_id(nome)')
+        .eq('data', dataHoje).order('created_at')
+      if (atualizado) setLancamentosDia(atualizado as Lancamento[])
+      setEditandoId(null); setForm(formVazio); setSalvando(false); setModal(false)
+      return
+    }
 
     const valorTotal  = parseFloat(form.valor)
     const numParcelas = form.forma === 'Cartão Crédito' ? Math.max(1, parseInt(form.parcelas) || 1) : 1
@@ -307,12 +360,13 @@ export default function MovimentoDiarioPage() {
     )
   }
 
-  function LancamentoRow({ l, onRemove, confirmando, onConfirmar, onCancelar }: {
+  function LancamentoRow({ l, onRemove, confirmando, onConfirmar, onCancelar, onEditar }: {
     l: Lancamento
     onRemove?: () => void
     confirmando?: boolean
     onConfirmar?: () => void
     onCancelar?: () => void
+    onEditar?: () => void
   }) {
     const vinculo       = l.tipo === 'receita' ? (l.pacientes?.nome ?? null) : (l.destinatarios?.nome ?? null)
     const catLabel      = l.categoria === 'venda' ? 'Venda' : l.categoria === 'procedimento' ? 'Procedimento' : null
@@ -337,6 +391,14 @@ export default function MovimentoDiarioPage() {
         <p className={`text-sm font-medium flex-shrink-0 ${l.tipo === 'receita' ? 'text-receita' : 'text-despesa'}`}>
           {l.tipo === 'receita' ? '+' : '-'} R$ {fmt(l.valor)}
         </p>
+        {onEditar && !confirmando && (
+          <button onClick={onEditar} className="nav-icon hover:text-[var(--text-1)] transition-colors flex-shrink-0" title="Editar">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
+              <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
+            </svg>
+          </button>
+        )}
         {onRemove && !confirmando && (
           <button onClick={onConfirmar} className="nav-icon hover:text-red-400 transition-colors flex-shrink-0">
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -452,6 +514,7 @@ export default function MovimentoDiarioPage() {
                         confirmando={confirmandoId === l.id}
                         onConfirmar={() => setConfirmandoId(l.id)}
                         onCancelar={() => setConfirmandoId(null)}
+                        onEditar={podeEditar ? () => abrirEdicao(l) : undefined}
                       />
                     ))}</div>
                 }
@@ -495,6 +558,7 @@ export default function MovimentoDiarioPage() {
                           confirmando={confirmandoId === l.id}
                           onConfirmar={() => setConfirmandoId(l.id)}
                           onCancelar={() => setConfirmandoId(null)}
+                          onEditar={podeEditar ? () => abrirEdicao(l) : undefined}
                         />
                       ))}</div>
                     </div>
@@ -596,13 +660,13 @@ export default function MovimentoDiarioPage() {
         </div>
       )}
 
-      {/* ── Modal: Nova Movimentação ── */}
+      {/* ── Modal: Nova / Editar Movimentação ── */}
       {modal && (
         <div className="modal-overlay">
           <div className="modal">
             <div className="modal-header">
-              <h3 className="modal-title">Nova Movimentação</h3>
-              <button onClick={() => setModal(false)} className="nav-icon hover:text-red-400 transition-colors"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 6L6 18M6 6l12 12"/></svg></button>
+              <h3 className="modal-title">{editandoId ? 'Editar Movimentação' : 'Nova Movimentação'}</h3>
+              <button onClick={() => { setModal(false); setEditandoId(null) }} className="nav-icon hover:text-red-400 transition-colors"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 6L6 18M6 6l12 12"/></svg></button>
             </div>
 
             <div className="flex gap-2 mb-4">
@@ -762,9 +826,9 @@ export default function MovimentoDiarioPage() {
             {erro && <p className="text-xs text-red-400 mt-3">{erro}</p>}
 
             <div className="flex gap-2 mt-5">
-              <button onClick={() => setModal(false)} className="btn-secondary flex-1 py-2">Cancelar</button>
+              <button onClick={() => { setModal(false); setEditandoId(null) }} className="btn-secondary flex-1 py-2">Cancelar</button>
               <button onClick={salvar} disabled={!form.descricao || !form.valor || salvando} className="btn-primary flex-1 py-2">
-                {salvando ? 'Salvando...' : 'Salvar'}
+                {salvando ? 'Salvando...' : editandoId ? 'Atualizar' : 'Salvar'}
               </button>
             </div>
           </div>
