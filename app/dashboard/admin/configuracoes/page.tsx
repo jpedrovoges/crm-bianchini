@@ -59,6 +59,7 @@ export default function ConfiguracoesPage() {
   const [configsDent, setConfigsDent] = useState<Record<string, ConfigDentista>>({})
   const [salvandoDentId, setSalvandoDentId] = useState<string | null>(null)
   const [okDentId, setOkDentId] = useState<string | null>(null)
+  const [erroDentId, setErroDentId] = useState<string | null>(null)
 
   useEffect(() => {
     supabase.from('dentistas').select('id, nome').eq('ativo', true).order('nome')
@@ -130,13 +131,18 @@ export default function ConfiguracoesPage() {
   async function salvarConfDentista(dentistaId: string) {
     const conf = getConfDentista(dentistaId)
     setSalvandoDentId(dentistaId)
-    await supabase.from('configuracoes_dentistas').upsert({
+    setErroDentId(null)
+    const { error } = await supabase.from('configuracoes_dentistas').upsert({
       dentista_id: dentistaId,
       tipo_conta: conf.tipo_conta,
       participa_rateio: conf.participa_rateio,
       formas_minha_conta: conf.formas_minha_conta,
-    })
+    }, { onConflict: 'dentista_id' })
     setSalvandoDentId(null)
+    if (error) {
+      setErroDentId(dentistaId)
+      return
+    }
     setOkDentId(dentistaId)
     setTimeout(() => setOkDentId(null), 2000)
   }
@@ -405,6 +411,7 @@ export default function ConfiguracoesPage() {
                           {salvandoDentId === d.id ? 'Salvando...' : 'Salvar'}
                         </button>
                         {okDentId === d.id && <span className="text-xs text-receita">Salvo!</span>}
+                        {erroDentId === d.id && <span className="text-xs text-red-400">Erro ao salvar — tente novamente</span>}
                       </div>
                     </div>
                   )
