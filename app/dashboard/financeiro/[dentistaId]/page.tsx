@@ -144,6 +144,9 @@ export default function DentistaFinanceiroPage() {
   const [despGeraisMes, setDespGeraisMes]             = useState(0)
   const [nParticipantesRateio, setNParticipantesRateio] = useState(0)
   const [parcDespGerais, setParcDespGerais]             = useState(0)
+  // Fechar mês — modo "sem rateio" (clínica retém e distribui: Marco + outros dentistas)
+  const [marcoValorRateio, setMarcoValorRateio] = useState('')
+  const [outrosRateio, setOutrosRateio] = useState<{ dentistaId: string; nome: string; valor: string }[]>([])
 
   useEffect(() => {
     supabase.from('dentistas').select('nome').eq('id', dentistaId).single()
@@ -291,6 +294,8 @@ export default function DentistaFinanceiroPage() {
     setErroFechamento(null)
     setLabTotal('')
     setParticipaRateioModal(participaRateio)
+    setMarcoValorRateio('')
+    setOutrosRateio([])
 
     const inicioMes = toISO(ano, mes, 1)
     const fimMes    = toISO(ano, mes, new Date(ano, mes + 1, 0).getDate())
@@ -307,9 +312,10 @@ export default function DentistaFinanceiroPage() {
       supabase.from('configuracoes_dentistas').select('dentista_id', { count: 'exact', head: true }).eq('participa_rateio', false),
     ])
 
-    if (cfgRateioRes.data) {
-      setConfigRateio({ ...cfgRateioRes.data, dentistas_rateio: (cfgRateioRes.data.dentistas_rateio as string[]) ?? [] } as ConfigRateio)
-    }
+    const cfgRateio = cfgRateioRes.data
+      ? ({ ...cfgRateioRes.data, dentistas_rateio: (cfgRateioRes.data.dentistas_rateio as string[]) ?? [] } as ConfigRateio)
+      : null
+    if (cfgRateio) setConfigRateio(cfgRateio)
 
     const totalDesp  = (despGeraisRes.data ?? []).reduce((s: number, l: { valor: number }) => s + l.valor, 0)
     const nAtivos    = ativosRes.count ?? 0
@@ -320,6 +326,27 @@ export default function DentistaFinanceiroPage() {
     setDespGeraisMes(totalDesp)
     setNParticipantesRateio(nParticip)
     setParcDespGerais(parc)
+
+    // Modo "sem rateio": pré-preenche Marco e outros dentistas com base nos percentuais
+    // configurados, sobre o faturamento líquido (impostos, sem laboratório ainda). Editável depois.
+    if (!participaRateio && cfgRateio) {
+      let totalImpostosPrev = 0
+      for (const l of receitas) totalImpostosPrev += l.valor * (impostosConfig[l.forma] ?? 0) / 100
+      totalImpostosPrev = Math.round(totalImpostosPrev * 100) / 100
+      const baseRateioPrev = Math.max(0, totalRec - totalImpostosPrev)
+
+      const marcoDefault = Math.round(baseRateioPrev * cfgRateio.percentual_marco / 100 * 100) / 100
+      setMarcoValorRateio(marcoDefault > 0 ? String(marcoDefault) : '')
+
+      const outrosTotalDefault = Math.round(baseRateioPrev * cfgRateio.percentual_outros / 100 * 100) / 100
+      const recipIds = cfgRateio.dentistas_rateio.filter(id => id !== dentistaId)
+      const each = recipIds.length > 0 ? Math.round((outrosTotalDefault / recipIds.length) * 100) / 100 : 0
+      setOutrosRateio(recipIds.map(id => ({
+        dentistaId: id,
+        nome: listaDentistas.find(d => d.id === id)?.nome ?? '...',
+        valor: each > 0 ? String(each) : '',
+      })))
+    }
 
     setModalFecharMes(true)
   }
@@ -340,22 +367,102 @@ export default function DentistaFinanceiroPage() {
     return { totalImpostos, totalComissao, aReceber, liquido, baseComissao }
   }
 
+  // Fechamento para quem não participa do rateio: a clínica retém o faturamento e paga
+  // Marco Bianchini + outros dentistas do rateio com valores livremente ajustáveis (variam por mês).
+  function calcFechamentoSemRateio(labVal: number, marcoValor: number, outrosTotal: number) {
+    let totalImpostos = 0
+    for (const l of receitas) {
+      const impPct = impostosConfig[l.forma] ?? 0
+      totalImpostos += l.valor * impPct / 100
+    }
+    totalImpostos = Math.round(totalImpostos * 100) / 100
+    const baseRateio = Math.max(0, totalRec - totalImpostos - labVal)
+    const aReceber    = Math.round((baseRateio - marcoValor - outrosTotal) * 100) / 100
+    const liquido     = Math.round((aReceber + totalRecebidos - totalDespResp - parcDespGerais) * 100) / 100
+    return { totalImpostos, baseRateio, aReceber, liquido }
+  }
+
+  function updateOutroRateio(dId: string, valor: string) {
+    setOutrosRateio(prev => prev.map(o => o.dentistaId === dId ? { ...o, valor } : o))
+  }
+
   async function confirmarFechamento() {
     if (!configRateio || !dentistaNome) return
     setFechandoMes(true)
     setErroFechamento(null)
 
-    const labVal   = parseFloat(labTotal) || 0
-    const calc     = calcFechamento(labVal, participaRateioModal)
+    const labVal    = parseFloat(labTotal) || 0
     const ultimoDia = toISO(ano, mes, new Date(ano, mes + 1, 0).getDate())
     const mesLabel  = `${MESES[mes]}/${ano}`
     const inserts: object[] = []
 
-    if (calc.totalImpostos > 0) {
+    let totalImpostos = 0
+
+    if (participaRateio) {
+      const calc = calcFechamento(labVal, participaRateioModal)
+      totalImpostos = calc.totalImpostos
+
+      if (calc.totalComissao > 0 && configRateio.marco_dentista_id && configRateio.marco_dentista_id !== dentistaId) {
+        inserts.push({
+          data: ultimoDia, tipo: 'despesa',
+          descricao: `Comissão Marco Bianchini – ${mesLabel}`,
+          valor: calc.totalComissao, forma: 'Rateio',
+          dentista_id: dentistaId, nota_fiscal: false,
+        })
+        inserts.push({
+          data: ultimoDia, tipo: 'receita',
+          descricao: `Comissão de ${dentistaNome} – ${mesLabel}`,
+          valor: calc.totalComissao, forma: 'Rateio',
+          dentista_id: configRateio.marco_dentista_id, nota_fiscal: false,
+        })
+      }
+    } else {
+      const marcoValor  = parseFloat(marcoValorRateio) || 0
+      const outrosLista = outrosRateio
+        .map(o => ({ ...o, valorNum: parseFloat(o.valor) || 0 }))
+        .filter(o => o.valorNum > 0)
+      const outrosTotal = Math.round(outrosLista.reduce((s, o) => s + o.valorNum, 0) * 100) / 100
+      const calc = calcFechamentoSemRateio(labVal, marcoValor, outrosTotal)
+      totalImpostos = calc.totalImpostos
+
+      if (marcoValor > 0 && configRateio.marco_dentista_id && configRateio.marco_dentista_id !== dentistaId) {
+        inserts.push({
+          data: ultimoDia, tipo: 'despesa',
+          descricao: `Comissão Marco Bianchini – ${mesLabel}`,
+          valor: marcoValor, forma: 'Rateio',
+          dentista_id: dentistaId, nota_fiscal: false,
+        })
+        inserts.push({
+          data: ultimoDia, tipo: 'receita',
+          descricao: `Comissão de ${dentistaNome} – ${mesLabel}`,
+          valor: marcoValor, forma: 'Rateio',
+          dentista_id: configRateio.marco_dentista_id, nota_fiscal: false,
+        })
+      }
+
+      if (outrosTotal > 0) {
+        inserts.push({
+          data: ultimoDia, tipo: 'despesa',
+          descricao: `Rateio outros dentistas – ${mesLabel}`,
+          valor: outrosTotal, forma: 'Rateio',
+          dentista_id: dentistaId, nota_fiscal: false,
+        })
+        for (const o of outrosLista) {
+          inserts.push({
+            data: ultimoDia, tipo: 'receita',
+            descricao: `Rateio de ${dentistaNome} – ${mesLabel}`,
+            valor: o.valorNum, forma: 'Rateio',
+            dentista_id: o.dentistaId, nota_fiscal: false,
+          })
+        }
+      }
+    }
+
+    if (totalImpostos > 0) {
       inserts.push({
         data: ultimoDia, tipo: 'despesa',
         descricao: `Impostos – ${mesLabel}`,
-        valor: calc.totalImpostos, forma: 'Imposto',
+        valor: totalImpostos, forma: 'Imposto',
         dentista_id: dentistaId, nota_fiscal: false,
       })
     }
@@ -366,21 +473,6 @@ export default function DentistaFinanceiroPage() {
         descricao: `Laboratório – ${mesLabel}`,
         valor: labVal, forma: 'Laboratório',
         dentista_id: dentistaId, nota_fiscal: false,
-      })
-    }
-
-    if (calc.totalComissao > 0 && configRateio.marco_dentista_id && configRateio.marco_dentista_id !== dentistaId) {
-      inserts.push({
-        data: ultimoDia, tipo: 'despesa',
-        descricao: `Comissão Marco Bianchini – ${mesLabel}`,
-        valor: calc.totalComissao, forma: 'Rateio',
-        dentista_id: dentistaId, nota_fiscal: false,
-      })
-      inserts.push({
-        data: ultimoDia, tipo: 'receita',
-        descricao: `Comissão de ${dentistaNome} – ${mesLabel}`,
-        valor: calc.totalComissao, forma: 'Rateio',
-        dentista_id: configRateio.marco_dentista_id, nota_fiscal: false,
       })
     }
 
@@ -401,6 +493,8 @@ export default function DentistaFinanceiroPage() {
     setFechandoMes(false)
     setModalFecharMes(false)
     setLabTotal('')
+    setMarcoValorRateio('')
+    setOutrosRateio([])
     setRefreshKey(k => k + 1)
   }
 
@@ -1016,9 +1110,25 @@ export default function DentistaFinanceiroPage() {
 
       {/* ── Modal: Fechar Mês ── */}
       {modalFecharMes && (() => {
-        const labVal  = parseFloat(labTotal) || 0
-        const calc    = calcFechamento(labVal, participaRateioModal)
-        const semNada = calc.totalImpostos === 0 && calc.totalComissao === 0 && labVal === 0 && parcDespGerais === 0
+        const labVal = parseFloat(labTotal) || 0
+
+        const marcoValorNum = parseFloat(marcoValorRateio) || 0
+        const outrosParsed  = outrosRateio.map(o => ({ ...o, valorNum: parseFloat(o.valor) || 0 }))
+        const outrosTotal   = Math.round(outrosParsed.reduce((s, o) => s + o.valorNum, 0) * 100) / 100
+
+        const calcOld = participaRateio ? calcFechamento(labVal, participaRateioModal) : null
+        const calcNovo = !participaRateio ? calcFechamentoSemRateio(labVal, marcoValorNum, outrosTotal) : null
+
+        const totalImpostos = participaRateio ? calcOld!.totalImpostos : calcNovo!.totalImpostos
+        const aReceber       = participaRateio ? calcOld!.aReceber : calcNovo!.aReceber
+        const liquido         = participaRateio ? calcOld!.liquido : calcNovo!.liquido
+
+        const semNada = participaRateio
+          ? (totalImpostos === 0 && calcOld!.totalComissao === 0 && labVal === 0 && parcDespGerais === 0)
+          : (totalImpostos === 0 && marcoValorNum === 0 && outrosTotal === 0 && labVal === 0 && parcDespGerais === 0)
+
+        const marcoConfigOk = !!configRateio?.marco_dentista_id && configRateio?.marco_dentista_id !== dentistaId
+
         return (
           <div className="modal-overlay">
             <div className="modal" style={{ maxWidth: '34rem' }}>
@@ -1032,7 +1142,7 @@ export default function DentistaFinanceiroPage() {
               </div>
 
               {/* Inputs */}
-              <div className="grid grid-cols-2 gap-3 mb-4">
+              <div className={`grid ${participaRateio ? 'grid-cols-2' : 'grid-cols-1'} gap-3 mb-4`}>
                 <div>
                   <label className="form-label">Laboratório total do mês (R$)</label>
                   <input
@@ -1042,23 +1152,35 @@ export default function DentistaFinanceiroPage() {
                     className="form-input"
                   />
                 </div>
-                <div>
-                  <label className="form-label">Rateio (comissão 13% Marco)</label>
-                  <div className="flex gap-2 mt-1">
-                    {([true, false] as const).map(v => (
-                      <button key={String(v)}
-                        onClick={() => setParticipaRateioModal(v)}
-                        className={`flex-1 py-2 text-xs rounded-lg border transition-colors ${participaRateioModal === v
-                          ? (v
-                            ? 'bg-emerald-950/40 border-emerald-800/60 text-emerald-400 font-medium'
-                            : 'bg-[var(--surface-muted)] border-[var(--border-hover)] text-[var(--text-2)] font-medium')
-                          : 'border-[var(--border)] text-[var(--text-3)]'}`}>
-                        {v ? 'Sim' : 'Não'}
-                      </button>
-                    ))}
+                {participaRateio && (
+                  <div>
+                    <label className="form-label">Rateio (comissão 13% Marco)</label>
+                    <div className="flex gap-2 mt-1">
+                      {([true, false] as const).map(v => (
+                        <button key={String(v)}
+                          onClick={() => setParticipaRateioModal(v)}
+                          className={`flex-1 py-2 text-xs rounded-lg border transition-colors ${participaRateioModal === v
+                            ? (v
+                              ? 'bg-emerald-950/40 border-emerald-800/60 text-emerald-400 font-medium'
+                              : 'bg-[var(--surface-muted)] border-[var(--border-hover)] text-[var(--text-2)] font-medium')
+                            : 'border-[var(--border)] text-[var(--text-3)]'}`}>
+                          {v ? 'Sim' : 'Não'}
+                        </button>
+                      ))}
+                    </div>
                   </div>
-                </div>
+                )}
               </div>
+
+              {!participaRateio && (
+                <div className="mb-4 rounded-lg px-3 py-2 text-xs flex items-center gap-2"
+                  style={{ backgroundColor: 'var(--surface-muted)', border: '1px solid var(--border)', color: 'var(--text-2)' }}>
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" style={{ flexShrink: 0 }}>
+                    <circle cx="12" cy="12" r="10"/><path d="M12 8v4l3 3"/>
+                  </svg>
+                  Sem rateio — a clínica retém o faturamento e paga Marco Bianchini e os dentistas do rateio abaixo. Ajuste os valores livremente.
+                </div>
+              )}
 
               {/* Cálculo */}
               <div className="rounded-xl p-4 mb-4 flex flex-col gap-2" style={{ backgroundColor: 'var(--surface-muted)' }}>
@@ -1071,7 +1193,7 @@ export default function DentistaFinanceiroPage() {
                 </div>
                 <div className="flex justify-between text-xs">
                   <span style={{ color: 'var(--text-2)' }}>Impostos (por forma de pagamento)</span>
-                  <span className="text-despesa">− R$ {fmt(calc.totalImpostos)}</span>
+                  <span className="text-despesa">− R$ {fmt(totalImpostos)}</span>
                 </div>
                 {labVal > 0 && (
                   <div className="flex justify-between text-xs">
@@ -1079,21 +1201,68 @@ export default function DentistaFinanceiroPage() {
                     <span className="text-despesa">− R$ {fmt(labVal)}</span>
                   </div>
                 )}
-                {participaRateioModal && (
+
+                {participaRateio && participaRateioModal && calcOld && (
                   <>
                     <div className="flex justify-between text-xs" style={{ borderTop: '1px dashed var(--border)', paddingTop: '6px', marginTop: '2px' }}>
                       <span style={{ color: 'var(--text-3)' }}>Base da comissão</span>
-                      <span style={{ color: 'var(--text-2)' }}>R$ {fmt(calc.baseComissao)}</span>
+                      <span style={{ color: 'var(--text-2)' }}>R$ {fmt(calcOld.baseComissao)}</span>
                     </div>
                     <div className="flex justify-between text-xs">
                       <span style={{ color: 'var(--text-2)' }}>Comissão Marco Bianchini ({COMISSAO_MARCO_PCT}%)</span>
-                      <span className="text-despesa">− R$ {fmt(calc.totalComissao)}</span>
+                      <span className="text-despesa">− R$ {fmt(calcOld.totalComissao)}</span>
                     </div>
                   </>
                 )}
+
+                {!participaRateio && calcNovo && (
+                  <>
+                    <div className="flex justify-between text-xs" style={{ borderTop: '1px dashed var(--border)', paddingTop: '6px', marginTop: '2px' }}>
+                      <span style={{ color: 'var(--text-3)' }}>Base do rateio</span>
+                      <span style={{ color: 'var(--text-2)' }}>R$ {fmt(calcNovo.baseRateio)}</span>
+                    </div>
+                    <div className="flex justify-between items-center gap-2 text-xs">
+                      <span style={{ color: 'var(--text-2)' }}>Comissão Marco Bianchini</span>
+                      <div className="flex items-center gap-1 flex-shrink-0">
+                        <span style={{ color: 'var(--text-3)' }}>R$</span>
+                        <input type="number" min="0" step="0.01" placeholder="0,00"
+                          value={marcoValorRateio}
+                          onChange={e => setMarcoValorRateio(e.target.value)}
+                          className="form-input text-right" style={{ width: '6.5rem' }} />
+                      </div>
+                    </div>
+
+                    {outrosRateio.length > 0 ? (
+                      <div className="flex flex-col gap-1.5 mt-0.5">
+                        <span className="text-xs" style={{ color: 'var(--text-2)' }}>Rateio — outros dentistas</span>
+                        {outrosRateio.map(o => (
+                          <div key={o.dentistaId} className="flex justify-between items-center gap-2 pl-3 text-xs">
+                            <span className="truncate" style={{ color: 'var(--text-3)' }}>↳ {o.nome}</span>
+                            <div className="flex items-center gap-1 flex-shrink-0">
+                              <span style={{ color: 'var(--text-3)' }}>R$</span>
+                              <input type="number" min="0" step="0.01" placeholder="0,00"
+                                value={o.valor}
+                                onChange={e => updateOutroRateio(o.dentistaId, e.target.value)}
+                                className="form-input text-right" style={{ width: '6.5rem' }} />
+                            </div>
+                          </div>
+                        ))}
+                        <div className="flex justify-between text-xs pl-3">
+                          <span style={{ color: 'var(--text-3)' }}>Total outros</span>
+                          <span className="text-despesa">− R$ {fmt(outrosTotal)}</span>
+                        </div>
+                      </div>
+                    ) : (
+                      <p className="text-xs" style={{ color: 'var(--text-3)' }}>
+                        Nenhum dentista selecionado em Configurações → Rateio para dividir os &quot;outros&quot;.
+                      </p>
+                    )}
+                  </>
+                )}
+
                 <div className="flex justify-between text-sm font-semibold pt-2" style={{ borderTop: '1px solid var(--border)' }}>
                   <span style={{ color: 'var(--text-1)' }}>A receber (dentista)</span>
-                  <span className={calc.aReceber >= 0 ? 'text-receita' : 'text-despesa'}>R$ {fmt(calc.aReceber)}</span>
+                  <span className={aReceber >= 0 ? 'text-receita' : 'text-despesa'}>R$ {fmt(aReceber)}</span>
                 </div>
               </div>
 
@@ -1125,7 +1294,7 @@ export default function DentistaFinanceiroPage() {
                   )}
                   <div className="flex justify-between text-sm font-semibold pt-2" style={{ borderTop: '1px solid var(--border)' }}>
                     <span style={{ color: 'var(--text-1)' }}>Total líquido</span>
-                    <span className={calc.liquido >= 0 ? 'text-receita' : 'text-despesa'}>R$ {fmt(calc.liquido)}</span>
+                    <span className={liquido >= 0 ? 'text-receita' : 'text-despesa'}>R$ {fmt(liquido)}</span>
                   </div>
                 </div>
               )}
@@ -1134,14 +1303,26 @@ export default function DentistaFinanceiroPage() {
               <div className="rounded-xl p-3 mb-4" style={{ backgroundColor: 'var(--accent-soft)', border: '1px solid rgba(16,185,129,0.2)' }}>
                 <p className="text-xs font-semibold mb-1.5" style={{ color: 'var(--accent)' }}>O que será registrado:</p>
                 <div className="flex flex-col gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
-                  {calc.totalImpostos > 0 && <p>• Impostos: R$ {fmt(calc.totalImpostos)} (despesa na sua conta)</p>}
+                  {totalImpostos > 0 && <p>• Impostos: R$ {fmt(totalImpostos)} (despesa na sua conta)</p>}
                   {labVal > 0 && <p>• Laboratório: R$ {fmt(labVal)} (despesa na sua conta)</p>}
-                  {calc.totalComissao > 0 && configRateio?.marco_dentista_id && configRateio.marco_dentista_id !== dentistaId && (
-                    <p>• Comissão Marco: R$ {fmt(calc.totalComissao)} — deduzida aqui e creditada para Marco</p>
+
+                  {participaRateio && calcOld && calcOld.totalComissao > 0 && marcoConfigOk && (
+                    <p>• Comissão Marco: R$ {fmt(calcOld.totalComissao)} — deduzida aqui e creditada para Marco</p>
                   )}
-                  {calc.totalComissao > 0 && (!configRateio?.marco_dentista_id || configRateio.marco_dentista_id === dentistaId) && (
+                  {participaRateio && calcOld && calcOld.totalComissao > 0 && !marcoConfigOk && (
                     <p className="text-amber-400">Marco Bianchini não configurado em Administração → Configurações.</p>
                   )}
+
+                  {!participaRateio && marcoValorNum > 0 && marcoConfigOk && (
+                    <p>• Comissão Marco: R$ {fmt(marcoValorNum)} — deduzida aqui e creditada para Marco</p>
+                  )}
+                  {!participaRateio && marcoValorNum > 0 && !marcoConfigOk && (
+                    <p className="text-amber-400">Marco Bianchini não configurado em Administração → Configurações.</p>
+                  )}
+                  {!participaRateio && outrosTotal > 0 && (
+                    <p>• Rateio outros dentistas: R$ {fmt(outrosTotal)} — dividido entre {outrosParsed.filter(o => o.valorNum > 0).length} dentista(s)</p>
+                  )}
+
                   {parcDespGerais > 0 && (
                     <p>• Despesas gerais: R$ {fmt(parcDespGerais)} (1/{nParticipantesRateio} de R$ {fmt(despGeraisMes)} em despesas gerais do mês)</p>
                   )}
