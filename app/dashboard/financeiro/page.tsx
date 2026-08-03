@@ -267,9 +267,10 @@ export default function FinanceiroPage() {
   const datas = Object.keys(porData).sort((a, b) => b.localeCompare(a))
 
   const porMes = Array.from({ length: 12 }, (_, i) => {
-    const mesStr = String(i + 1).padStart(2, '0')
-    const movs = lancamentos.filter(l => l.data.startsWith(`${ano}-${mesStr}`))
-    const rec  = movs.filter(l => l.tipo === 'receita').reduce((s, l) => s + l.valor, 0)
+    const mesStr    = String(i + 1).padStart(2, '0')
+    const movs      = lancamentos.filter(l => l.data.startsWith(`${ano}-${mesStr}`))
+    const movsClin  = clinicaReceitas.filter(l => l.data.startsWith(`${ano}-${mesStr}`))
+    const rec  = movs.filter(l => l.tipo === 'receita').reduce((s, l) => s + l.valor, 0) + movsClin.reduce((s, l) => s + l.valor, 0)
     const desp = movs.filter(l => l.tipo === 'despesa').reduce((s, l) => s + l.valor, 0)
     return { mes: i, rec, desp, saldo: rec - desp }
   })
@@ -347,8 +348,8 @@ export default function FinanceiroPage() {
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-8">
                 <div className="card-p5">
                   <p className="card-label">Receitas</p>
-                  <p className="card-value text-receita">R$ {fmt(totalRec)}</p>
-                  <p className="card-sub">{receitas.length} lançamento(s)</p>
+                  <p className="card-value text-receita">R$ {fmt(totalRecGlobal)}</p>
+                  <p className="card-sub">{receitas.length + clinicaReceitas.length} lançamento(s)</p>
                 </div>
                 <div className="card-p5">
                   <p className="card-label">Despesas</p>
@@ -357,10 +358,10 @@ export default function FinanceiroPage() {
                 </div>
                 <div className="card-p5">
                   <p className="card-label">Saldo</p>
-                  <p className={`card-value ${totalRec - totalDesp >= 0 ? 'text-receita' : 'text-despesa'}`}>
-                    R$ {fmt(totalRec - totalDesp)}
+                  <p className={`card-value ${totalRecGlobal - totalDesp >= 0 ? 'text-receita' : 'text-despesa'}`}>
+                    R$ {fmt(totalRecGlobal - totalDesp)}
                   </p>
-                  <p className="card-sub">{lancamentos.length} no total</p>
+                  <p className="card-sub">{lancamentos.length + clinicaReceitas.length} no total</p>
                 </div>
               </div>
 
