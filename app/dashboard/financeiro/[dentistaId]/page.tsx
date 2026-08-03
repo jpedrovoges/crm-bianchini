@@ -583,76 +583,81 @@ export default function DentistaFinanceiroPage() {
           /* ── Visão mensal ── */
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
             {/* Receitas por forma */}
-            <div className="card-p5">
-              <h2 className="widget-title">Receitas por Forma</h2>
-              {porForma.length === 0 ? (
-                <p className="empty-text">Sem receitas no período</p>
-              ) : (
-                <div className="flex flex-col gap-3">
-                  {porForma.sort((a, b) => b.total - a.total).map(f => (
-                    <div key={f.forma}>
-                      <div className="flex items-center justify-between mb-1">
-                        <span className="text-xs text-[var(--text-2)]">{f.forma}</span>
-                        <span className="text-xs font-medium text-receita">R$ {fmt(f.total)}</span>
-                      </div>
-                      <div className="w-full h-1 rounded-full" style={{ backgroundColor: 'var(--surface-muted)' }}>
-                        <div className="h-1 rounded-full bg-emerald-400"
-                          style={{ width: `${totalRec > 0 ? (f.total / totalRec) * 100 : 0}%` }} />
-                      </div>
-                      <p className="text-xs mt-0.5" style={{ color: 'var(--text-3)' }}>{f.count} lançamento(s)</p>
-                    </div>
-                  ))}
-                </div>
-              )}
-
-              {/* Repasses recebidos no período */}
-              {repassesRecebidos.length > 0 && (
-                <div className="mt-5">
-                  <h3 className="widget-title">Repasses Recebidos</h3>
+            <div className="card-p5 flex flex-col" style={{ maxHeight: '32rem' }}>
+              <h2 className="widget-title flex-shrink-0">Receitas por Forma</h2>
+              <div className="overflow-y-auto flex-1" style={{ scrollbarWidth: 'thin' }}>
+                {porForma.length === 0 ? (
+                  <p className="empty-text">Sem receitas no período</p>
+                ) : (
                   <div className="flex flex-col gap-2">
-                    {repassesRecebidos.map(r => (
-                      <div key={r.id} className="flex items-center justify-between py-1.5 px-2 rounded"
-                        style={{ backgroundColor: 'var(--surface-muted)' }}>
-                        <div className="min-w-0 flex-1">
-                          <p className="text-xs font-medium truncate" style={{ color: 'var(--text-1)' }}>
-                            {r.lancamento?.descricao ?? '—'}
-                          </p>
-                          <p className="text-xs" style={{ color: 'var(--text-3)' }}>
-                            {r.percentual}% de {r.origem?.nome ?? '?'} · {r.lancamento?.data?.split('-').reverse().join('/') ?? ''}
-                          </p>
+                    {porForma.sort((a, b) => b.total - a.total).map(f => (
+                      <div key={f.forma} className="movimento-item">
+                        <div className="dot-receita" />
+                        <div className="flex-1 min-w-0">
+                          <p className="mov-desc">{f.forma}</p>
+                          <p className="mov-meta">{f.count} lançamento(s)</p>
                         </div>
-                        <span className="text-sm font-medium text-receita ml-3 flex-shrink-0">+R$ {fmt(r.valor)}</span>
+                        <div className="w-10 flex-shrink-0">
+                          <div className="w-full h-1 rounded-full" style={{ backgroundColor: 'var(--surface-muted)' }}>
+                            <div className="h-1 rounded-full bg-emerald-400"
+                              style={{ width: `${totalRec > 0 ? (f.total / totalRec) * 100 : 0}%` }} />
+                          </div>
+                        </div>
+                        <span className="text-sm font-medium text-receita flex-shrink-0">R$ {fmt(f.total)}</span>
                       </div>
                     ))}
                   </div>
-                </div>
-              )}
+                )}
 
-              {/* Despesas atribuídas (movimento diário) */}
-              {despesasResponsavel.length > 0 && (
-                <div className="mt-5">
-                  <h3 className="widget-title">Despesas Atribuídas</h3>
-                  <div className="flex flex-col gap-2">
-                    {despesasResponsavel.map(d => {
-                      const [a, m, dia] = d.data.split('-')
-                      return (
-                        <div key={d.id} className="flex items-center justify-between py-1.5 px-2 rounded"
+                {/* Repasses recebidos no período */}
+                {repassesRecebidos.length > 0 && (
+                  <div className="mt-5">
+                    <h3 className="widget-title">Repasses Recebidos</h3>
+                    <div className="flex flex-col gap-2">
+                      {repassesRecebidos.map(r => (
+                        <div key={r.id} className="flex items-center justify-between py-1.5 px-2 rounded"
                           style={{ backgroundColor: 'var(--surface-muted)' }}>
                           <div className="min-w-0 flex-1">
-                            <p className="text-xs font-medium truncate" style={{ color: 'var(--text-1)' }}>{d.descricao}</p>
-                            <p className="text-xs" style={{ color: 'var(--text-3)' }}>{dia}/{m}/{a}</p>
+                            <p className="text-xs font-medium truncate" style={{ color: 'var(--text-1)' }}>
+                              {r.lancamento?.descricao ?? '—'}
+                            </p>
+                            <p className="text-xs" style={{ color: 'var(--text-3)' }}>
+                              {r.percentual}% de {r.origem?.nome ?? '?'} · {r.lancamento?.data?.split('-').reverse().join('/') ?? ''}
+                            </p>
                           </div>
-                          <span className="text-sm font-medium text-despesa ml-3 flex-shrink-0">-R$ {fmt(d.valor)}</span>
+                          <span className="text-sm font-medium text-receita ml-3 flex-shrink-0">+R$ {fmt(r.valor)}</span>
                         </div>
-                      )
-                    })}
-                    <div className="flex justify-between items-center pt-1 mt-1" style={{ borderTop: '1px solid var(--border)' }}>
-                      <span className="text-xs" style={{ color: 'var(--text-3)' }}>Total atribuído</span>
-                      <span className="text-xs font-semibold text-despesa">-R$ {fmt(totalDespResp)}</span>
+                      ))}
                     </div>
                   </div>
-                </div>
-              )}
+                )}
+
+                {/* Despesas atribuídas (movimento diário) */}
+                {despesasResponsavel.length > 0 && (
+                  <div className="mt-5">
+                    <h3 className="widget-title">Despesas Atribuídas</h3>
+                    <div className="flex flex-col gap-2">
+                      {despesasResponsavel.map(d => {
+                        const [a, m, dia] = d.data.split('-')
+                        return (
+                          <div key={d.id} className="flex items-center justify-between py-1.5 px-2 rounded"
+                            style={{ backgroundColor: 'var(--surface-muted)' }}>
+                            <div className="min-w-0 flex-1">
+                              <p className="text-xs font-medium truncate" style={{ color: 'var(--text-1)' }}>{d.descricao}</p>
+                              <p className="text-xs" style={{ color: 'var(--text-3)' }}>{dia}/{m}/{a}</p>
+                            </div>
+                            <span className="text-sm font-medium text-despesa ml-3 flex-shrink-0">-R$ {fmt(d.valor)}</span>
+                          </div>
+                        )
+                      })}
+                      <div className="flex justify-between items-center pt-1 mt-1" style={{ borderTop: '1px solid var(--border)' }}>
+                        <span className="text-xs" style={{ color: 'var(--text-3)' }}>Total atribuído</span>
+                        <span className="text-xs font-semibold text-despesa">-R$ {fmt(totalDespResp)}</span>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
             </div>
 
             {/* Lançamentos data */}

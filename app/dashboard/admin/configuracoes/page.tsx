@@ -7,6 +7,8 @@ import { useSession } from '@/app/dashboard/SessionProvider'
 type Aba = 'rateio' | 'impostos' | 'dentistas'
 type Dentista = { id: string; nome: string }
 
+const FORMAS_CFG = ['Pix', 'Dinheiro', 'Cartão Crédito', 'Cartão Débito', 'Convênio', 'Boleto']
+
 type ConfigRateio = {
   id: string
   percentual_dentista: number
@@ -28,6 +30,7 @@ type ConfigDentista = {
   dentista_id: string
   tipo_conta: 'pessoal' | 'empresa'
   participa_rateio: boolean
+  formas_minha_conta: string[]
 }
 
 function fmt(v: number) {
@@ -70,7 +73,9 @@ export default function ConfiguracoesPage() {
       .then(({ data }) => {
         if (!data) return
         const map: Record<string, ConfigDentista> = {}
-        ;(data as ConfigDentista[]).forEach(d => { map[d.dentista_id] = d })
+        ;(data as (ConfigDentista & { formas_minha_conta: string[] | null })[]).forEach(d => {
+          map[d.dentista_id] = { ...d, formas_minha_conta: d.formas_minha_conta ?? [] }
+        })
         setConfigsDent(map)
       })
   }, [])
@@ -118,6 +123,7 @@ export default function ConfiguracoesPage() {
       dentista_id: dentistaId,
       tipo_conta: 'pessoal',
       participa_rateio: true,
+      formas_minha_conta: [],
     }
   }
 
@@ -128,6 +134,7 @@ export default function ConfiguracoesPage() {
       dentista_id: dentistaId,
       tipo_conta: conf.tipo_conta,
       participa_rateio: conf.participa_rateio,
+      formas_minha_conta: conf.formas_minha_conta,
     })
     setSalvandoDentId(null)
     setOkDentId(dentistaId)
@@ -175,9 +182,9 @@ export default function ConfiguracoesPage() {
       {aba === 'rateio' && (
         <div className="max-w-xl flex flex-col gap-5">
           <div className="card-p6">
-            <h2 className="widget-title">Marco Bianchini (responsável da clínica)</h2>
+            <h2 className="widget-title">Responsável da Clinica</h2>
             <p className="text-xs mb-3" style={{ color: 'var(--text-3)' }}>
-              Selecione qual dentista cadastrado corresponde a Marco Bianchini
+              Selecione qual dentista cadastrado corresponde ao responsável.
             </p>
             <select
               value={rateio.marco_dentista_id ?? ''}
@@ -366,6 +373,30 @@ export default function ConfiguracoesPage() {
                               </button>
                             ))}
                           </div>
+                        </div>
+                      </div>
+                      <div className="mb-3">
+                        <label className="form-label">Formas que passam pela conta da clínica</label>
+                        <p className="text-xs mb-2" style={{ color: 'var(--text-3)' }}>
+                          Receitas com essas formas aparecem em Financeiro → Lançamentos para controle de repasse
+                        </p>
+                        <div className="flex flex-wrap gap-x-4 gap-y-2">
+                          {FORMAS_CFG.map(forma => (
+                            <label key={forma} className="flex items-center gap-2 cursor-pointer select-none">
+                              <input
+                                type="checkbox"
+                                checked={conf.formas_minha_conta.includes(forma)}
+                                onChange={() => {
+                                  const next = conf.formas_minha_conta.includes(forma)
+                                    ? conf.formas_minha_conta.filter(f => f !== forma)
+                                    : [...conf.formas_minha_conta, forma]
+                                  updateConfDentista(d.id, { formas_minha_conta: next })
+                                }}
+                                className="w-3.5 h-3.5 accent-emerald-500"
+                              />
+                              <span className="text-xs" style={{ color: 'var(--text-1)' }}>{forma}</span>
+                            </label>
+                          ))}
                         </div>
                       </div>
                       <div className="flex items-center gap-3">
