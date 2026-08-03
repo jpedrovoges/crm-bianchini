@@ -174,7 +174,7 @@ export default function DentistaFinanceiroPage() {
       })
     supabase.from('configuracoes_dentistas')
       .select('participa_rateio').eq('dentista_id', dentistaId).single()
-      .then(({ data }) => { if (data) setParticipaRateio(data.participa_rateio ?? false) })
+      .then(({ data }) => { setParticipaRateio(data?.participa_rateio ?? true) })
   }, [dentistaId])
 
   useEffect(() => {
