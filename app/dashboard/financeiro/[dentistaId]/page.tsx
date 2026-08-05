@@ -148,6 +148,10 @@ export default function DentistaFinanceiroPage() {
   // Fechar mês — modo "sem rateio" (clínica retém e distribui: Marco + outros dentistas)
   const [marcoValorRateio, setMarcoValorRateio] = useState('')
   const [outrosRateio, setOutrosRateio] = useState<{ dentistaId: string; nome: string; valor: string }[]>([])
+  // Fechar mês — novo formato (rateio, exceto Marco): ajuste manual do valor final PF/PJ
+  // (ex: descontar juros de cartão, somar adiantamentos) — admin e gestor podem sobrescrever.
+  const [valorPFOverride, setValorPFOverride] = useState('')
+  const [valorPJOverride, setValorPJOverride] = useState('')
 
   // Cadeado de mês fechado
   const [fechamento, setFechamento] = useState<FechamentoMensal | null>(null)
@@ -313,6 +317,8 @@ export default function DentistaFinanceiroPage() {
     setParticipaRateioModal(participaRateio)
     setMarcoValorRateio('')
     setOutrosRateio([])
+    setValorPFOverride('')
+    setValorPJOverride('')
 
     const inicioMes = toISO(ano, mes, 1)
     const fimMes    = toISO(ano, mes, new Date(ano, mes + 1, 0).getDate())
@@ -517,8 +523,13 @@ export default function DentistaFinanceiroPage() {
       const aPagar      = Math.round((calc.totalComissao + parcDespGerais + totalDespResp) * 100) / 100
       const aReceberNovo = Math.round((comissaoAReceberGerada + participacaoCirurgia) * 100) / 100
       const totalClinica = Math.round((aPagar - aReceberNovo) * 100) / 100
-      const valorPF = totalClinica > 0 ? Math.round(totalClinica * 0.6 * 100) / 100 : 0
-      const valorPJ = totalClinica > 0 ? Math.round((totalClinica - valorPF) * 100) / 100 : 0
+      const valorPFCalc = totalClinica > 0 ? Math.round(totalClinica * 0.6 * 100) / 100 : 0
+      const valorPJCalc = totalClinica > 0 ? Math.round((totalClinica - valorPFCalc) * 100) / 100 : 0
+
+      // Admin/gestor podem sobrescrever o valor final (juros de cartão, adiantamentos, etc.)
+      const valorPFFinal = totalClinica > 0 && valorPFOverride !== '' ? (parseFloat(valorPFOverride) || 0) : valorPFCalc
+      const valorPJFinal = totalClinica > 0 && valorPJOverride !== '' ? (parseFloat(valorPJOverride) || 0) : valorPJCalc
+      const totalClinicaFinal = totalClinica > 0 ? Math.round((valorPFFinal + valorPJFinal) * 100) / 100 : totalClinica
 
       const { error: errFechamento } = await supabase.from('fechamentos_mensais').upsert({
         dentista_id: dentistaId, ano, mes, status: 'fechado',
@@ -527,9 +538,9 @@ export default function DentistaFinanceiroPage() {
         despesas_atribuidas: totalDespResp,
         comissao_a_receber: comissaoAReceberGerada,
         participacao_cirurgia: participacaoCirurgia,
-        total_a_pagar_clinica: totalClinica,
-        valor_pf: valorPF,
-        valor_pj: valorPJ,
+        total_a_pagar_clinica: totalClinicaFinal,
+        valor_pf: valorPFFinal,
+        valor_pj: valorPJFinal,
         fechado_em: new Date().toISOString(),
         fechado_por: session?.username ?? null,
         reaberto_em: null,
@@ -541,6 +552,8 @@ export default function DentistaFinanceiroPage() {
     setFechandoMes(false)
     setModalFecharMes(false)
     setLabTotal('')
+    setValorPFOverride('')
+    setValorPJOverride('')
     setMarcoValorRateio('')
     setOutrosRateio([])
     setRefreshKey(k => k + 1)
@@ -1256,6 +1269,11 @@ export default function DentistaFinanceiroPage() {
         const totalClinica  = Math.round((aPagarNovo - aReceberNovo) * 100) / 100
         const valorPFPrev   = totalClinica > 0 ? Math.round(totalClinica * 0.6 * 100) / 100 : 0
         const valorPJPrev   = totalClinica > 0 ? Math.round((totalClinica - valorPFPrev) * 100) / 100 : 0
+        // Admin/gestor podem ajustar o valor final (juros de cartão, adiantamentos etc.)
+        const valorPFFinal  = totalClinica > 0 && valorPFOverride !== '' ? (parseFloat(valorPFOverride) || 0) : valorPFPrev
+        const valorPJFinal  = totalClinica > 0 && valorPJOverride !== '' ? (parseFloat(valorPJOverride) || 0) : valorPJPrev
+        const totalClinicaFinal = totalClinica > 0 ? Math.round((valorPFFinal + valorPJFinal) * 100) / 100 : totalClinica
+        const ajustado      = totalClinica > 0 && (valorPFOverride !== '' || valorPJOverride !== '')
 
         return (
           <div className="modal-overlay">
@@ -1480,19 +1498,37 @@ export default function DentistaFinanceiroPage() {
                   <div className="flex justify-between text-sm font-semibold pt-2" style={{ borderTop: '1px solid var(--border)' }}>
                     <span style={{ color: 'var(--text-1)' }}>
                       {totalClinica >= 0 ? 'Total a pagar para a clínica' : 'Clínica paga ao dentista'}
+                      {ajustado && <span className="text-xs font-normal ml-1" style={{ color: 'var(--text-3)' }}>(ajustado)</span>}
                     </span>
-                    <span className={totalClinica >= 0 ? 'text-despesa' : 'text-receita'}>R$ {fmt(Math.abs(totalClinica))}</span>
+                    <span className={totalClinica >= 0 ? 'text-despesa' : 'text-receita'}>
+                      R$ {fmt(Math.abs(totalClinica >= 0 ? totalClinicaFinal : totalClinica))}
+                    </span>
                   </div>
 
                   {totalClinica > 0 && (
                     <div className="flex flex-col gap-1.5 pl-3">
-                      <div className="flex justify-between text-xs">
+                      <p className="text-xs" style={{ color: 'var(--text-3)' }}>
+                        Ajuste manualmente se houver juros de cartão a descontar, adiantamentos a somar etc.
+                      </p>
+                      <div className="flex justify-between items-center gap-2 text-xs">
                         <span style={{ color: 'var(--text-3)' }}>↳ Pagamento conta PF (60%)</span>
-                        <span style={{ color: 'var(--text-2)' }}>R$ {fmt(valorPFPrev)}</span>
+                        <div className="flex items-center gap-1 flex-shrink-0">
+                          <span style={{ color: 'var(--text-3)' }}>R$</span>
+                          <input type="number" step="0.01" placeholder={fmt(valorPFPrev)}
+                            value={valorPFOverride}
+                            onChange={e => setValorPFOverride(e.target.value)}
+                            className="form-input text-right" style={{ width: '6.5rem' }} />
+                        </div>
                       </div>
-                      <div className="flex justify-between text-xs">
+                      <div className="flex justify-between items-center gap-2 text-xs">
                         <span style={{ color: 'var(--text-3)' }}>↳ Pagamento conta PJ (40%)</span>
-                        <span style={{ color: 'var(--text-2)' }}>R$ {fmt(valorPJPrev)}</span>
+                        <div className="flex items-center gap-1 flex-shrink-0">
+                          <span style={{ color: 'var(--text-3)' }}>R$</span>
+                          <input type="number" step="0.01" placeholder={fmt(valorPJPrev)}
+                            value={valorPJOverride}
+                            onChange={e => setValorPJOverride(e.target.value)}
+                            className="form-input text-right" style={{ width: '6.5rem' }} />
+                        </div>
                       </div>
                     </div>
                   )}
@@ -1528,7 +1564,7 @@ export default function DentistaFinanceiroPage() {
                   )}
                   {semNada && <p>Nenhum lançamento a gerar.</p>}
                   {usaNovoFormato && (
-                    <p>🔒 O mês será fechado e travado para edição (só admin poderá reabrir) — total a pagar à clínica: R$ {fmt(Math.abs(totalClinica))} {totalClinica < 0 ? '(clínica paga ao dentista)' : ''}</p>
+                    <p>🔒 O mês será fechado e travado para edição (só admin poderá reabrir) — total a pagar à clínica: R$ {fmt(Math.abs(totalClinica >= 0 ? totalClinicaFinal : totalClinica))} {totalClinica < 0 ? '(clínica paga ao dentista)' : ajustado ? '(valor ajustado manualmente)' : ''}</p>
                   )}
                 </div>
               </div>
