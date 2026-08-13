@@ -138,6 +138,7 @@ export default function DentistaFinanceiroPage() {
   const [configRateio, setConfigRateio] = useState<ConfigRateio | null>(null)
   const [impostosConfig, setImpostosConfig] = useState<Record<string, number>>({})
   const [participaRateio, setParticipaRateio] = useState(false)       // vem da config
+  const [tipoConta, setTipoConta] = useState<'pessoal' | 'empresa' | 'ambos'>('pessoal') // vem da config
   const [participaRateioModal, setParticipaRateioModal] = useState(false) // pode ser ajustado no modal
   const [labTotal, setLabTotal] = useState('')
   const [fechandoMes, setFechandoMes] = useState(false)
@@ -183,8 +184,11 @@ export default function DentistaFinanceiroPage() {
         setImpostosConfig(map)
       })
     supabase.from('configuracoes_dentistas')
-      .select('participa_rateio').eq('dentista_id', dentistaId).single()
-      .then(({ data }) => { setParticipaRateio(data?.participa_rateio ?? true) })
+      .select('participa_rateio, tipo_conta').eq('dentista_id', dentistaId).single()
+      .then(({ data }) => {
+        setParticipaRateio(data?.participa_rateio ?? true)
+        setTipoConta((data?.tipo_conta as 'pessoal' | 'empresa' | 'ambos') ?? 'pessoal')
+      })
     supabase.from('configuracoes_rateio').select('*').limit(1).single()
       .then(({ data }) => {
         if (!data) return
@@ -523,8 +527,14 @@ export default function DentistaFinanceiroPage() {
       const aPagar      = Math.round((calc.totalComissao + parcDespGerais + totalDespResp) * 100) / 100
       const aReceberNovo = Math.round((comissaoAReceberGerada + participacaoCirurgia) * 100) / 100
       const totalClinica = Math.round((aPagar - aReceberNovo) * 100) / 100
-      const valorPFCalc = totalClinica > 0 ? Math.round(totalClinica * 0.6 * 100) / 100 : 0
-      const valorPJCalc = totalClinica > 0 ? Math.round((totalClinica - valorPFCalc) * 100) / 100 : 0
+      // Split 60% PF / 40% PJ só para dentistas configurados com conta "ambos";
+      // os demais recebem o valor integral na conta configurada (pessoal → PF, empresa → PJ).
+      const valorPFCalc = totalClinica <= 0 ? 0
+        : mostraSplitPFPJ ? Math.round(totalClinica * 0.6 * 100) / 100
+        : tipoConta === 'empresa' ? 0 : totalClinica
+      const valorPJCalc = totalClinica <= 0 ? 0
+        : mostraSplitPFPJ ? Math.round((totalClinica - valorPFCalc) * 100) / 100
+        : tipoConta === 'empresa' ? totalClinica : 0
 
       // Admin/gestor podem sobrescrever o valor final (juros de cartão, adiantamentos, etc.)
       const valorPFFinal = totalClinica > 0 && valorPFOverride !== '' ? (parseFloat(valorPFOverride) || 0) : valorPFCalc
@@ -582,6 +592,7 @@ export default function DentistaFinanceiroPage() {
   // Novo formato de fechamento: dentistas que participam do rateio, exceto o próprio Marco Bianchini
   const isMarco         = !!configRateio?.marco_dentista_id && configRateio.marco_dentista_id === dentistaId
   const usaNovoFormato  = participaRateio && !isMarco
+  const mostraSplitPFPJ = usaNovoFormato && tipoConta === 'ambos'
   const comissaoAReceberGerada = receitas.filter(l => l.forma === 'Rateio').reduce((s, l) => s + l.valor, 0)
   const participacaoCirurgia   = totalRecebidos
 
@@ -702,21 +713,25 @@ export default function DentistaFinanceiroPage() {
               {fechamento.fechado_por ? ` por ${fechamento.fechado_por}` : ''} — edição bloqueada{podeReabrir ? '' : ' (só admin pode reabrir)'}.
             </span>
           </div>
-          <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 text-xs">
+          <div className={`grid grid-cols-2 ${fechamento.valor_pf > 0 && fechamento.valor_pj > 0 ? 'sm:grid-cols-3' : 'sm:grid-cols-2'} gap-3 text-xs`}>
             <div className="flex justify-between sm:block">
               <span style={{ color: 'var(--text-3)' }}>Total a pagar à clínica</span>
               <span className={`sm:block font-semibold ${fechamento.total_a_pagar_clinica >= 0 ? 'text-despesa' : 'text-receita'}`}>
                 R$ {fmt(Math.abs(fechamento.total_a_pagar_clinica))}
               </span>
             </div>
-            <div className="flex justify-between sm:block">
-              <span style={{ color: 'var(--text-3)' }}>Conta PF (60%)</span>
-              <span className="sm:block font-semibold" style={{ color: 'var(--text-1)' }}>R$ {fmt(fechamento.valor_pf)}</span>
-            </div>
-            <div className="flex justify-between sm:block">
-              <span style={{ color: 'var(--text-3)' }}>Conta PJ (40%)</span>
-              <span className="sm:block font-semibold" style={{ color: 'var(--text-1)' }}>R$ {fmt(fechamento.valor_pj)}</span>
-            </div>
+            {fechamento.valor_pf > 0 && fechamento.valor_pj > 0 ? (
+              <>
+                <div className="flex justify-between sm:block">
+                  <span style={{ color: 'var(--text-3)' }}>Conta PF (60%)</span>
+                  <span className="sm:block font-semibold" style={{ color: 'var(--text-1)' }}>R$ {fmt(fechamento.valor_pf)}</span>
+                </div>
+                <div className="flex justify-between sm:block">
+                  <span style={{ color: 'var(--text-3)' }}>Conta PJ (40%)</span>
+                  <span className="sm:block font-semibold" style={{ color: 'var(--text-1)' }}>R$ {fmt(fechamento.valor_pj)}</span>
+                </div>
+              </>
+            ) : null}
           </div>
         </div>
       )}
@@ -1267,8 +1282,12 @@ export default function DentistaFinanceiroPage() {
         const aPagarNovo    = usaNovoFormato && calcOld ? Math.round((calcOld.totalComissao + parcDespGerais + totalDespResp) * 100) / 100 : 0
         const aReceberNovo  = usaNovoFormato ? Math.round((comissaoAReceberGerada + participacaoCirurgia) * 100) / 100 : 0
         const totalClinica  = Math.round((aPagarNovo - aReceberNovo) * 100) / 100
-        const valorPFPrev   = totalClinica > 0 ? Math.round(totalClinica * 0.6 * 100) / 100 : 0
-        const valorPJPrev   = totalClinica > 0 ? Math.round((totalClinica - valorPFPrev) * 100) / 100 : 0
+        const valorPFPrev   = totalClinica <= 0 ? 0
+          : mostraSplitPFPJ ? Math.round(totalClinica * 0.6 * 100) / 100
+          : tipoConta === 'empresa' ? 0 : totalClinica
+        const valorPJPrev   = totalClinica <= 0 ? 0
+          : mostraSplitPFPJ ? Math.round((totalClinica - valorPFPrev) * 100) / 100
+          : tipoConta === 'empresa' ? totalClinica : 0
         // Admin/gestor podem ajustar o valor final (juros de cartão, adiantamentos etc.)
         const valorPFFinal  = totalClinica > 0 && valorPFOverride !== '' ? (parseFloat(valorPFOverride) || 0) : valorPFPrev
         const valorPJFinal  = totalClinica > 0 && valorPJOverride !== '' ? (parseFloat(valorPJOverride) || 0) : valorPJPrev
@@ -1417,87 +1436,89 @@ export default function DentistaFinanceiroPage() {
                 </div>
               </div>
 
-              {/* Ajustes — Marco e dentistas sem rateio */}
-              {!usaNovoFormato && (totalRecebidos > 0 || totalDespResp > 0 || parcDespGerais > 0) && (
+              {/* Fechamento — sem rateio (inclui o próprio Marco): Total entradas / saídas / comissões a pagar / Total a pagar */}
+              {!usaNovoFormato && (
                 <div className="rounded-xl p-4 mb-4 flex flex-col gap-2" style={{ border: '1px solid var(--border)' }}>
                   <p className="text-xs font-semibold uppercase tracking-widest mb-1" style={{ color: 'var(--text-3)' }}>
-                    Ajustes
+                    Fechamento de mês
                   </p>
-                  {totalRecebidos > 0 && (
-                    <div className="flex justify-between text-xs">
-                      <span style={{ color: 'var(--text-2)' }}>Repasses / Participações recebidas</span>
-                      <span className="text-receita">+ R$ {fmt(totalRecebidos)}</span>
+                  <div className="flex justify-between text-xs">
+                    <span style={{ color: 'var(--text-2)' }}>Total entradas</span>
+                    <span className="text-receita">R$ {fmt(totalRec)}</span>
+                  </div>
+                  <div className="flex justify-between text-xs">
+                    <span style={{ color: 'var(--text-2)' }}>Total saídas</span>
+                    <span className="text-despesa">R$ {fmt(totalImpostos + labVal)}</span>
+                  </div>
+                  <div className="flex justify-between text-xs pt-1" style={{ borderTop: '1px dashed var(--border)' }}>
+                    <span style={{ color: 'var(--text-2)' }}>Total comissões a pagar</span>
+                    <span className={aReceber >= 0 ? 'text-receita' : 'text-despesa'}>R$ {fmt(aReceber)}</span>
+                  </div>
+
+                  {(totalRecebidos > 0 || totalDespResp > 0 || parcDespGerais > 0) && (
+                    <div className="flex flex-col gap-1.5 pl-3 mt-0.5">
+                      {totalRecebidos > 0 && (
+                        <div className="flex justify-between text-xs">
+                          <span style={{ color: 'var(--text-3)' }}>↳ Repasses / Participações recebidas</span>
+                          <span className="text-receita">+ R$ {fmt(totalRecebidos)}</span>
+                        </div>
+                      )}
+                      {totalDespResp > 0 && (
+                        <div className="flex justify-between text-xs">
+                          <span style={{ color: 'var(--text-3)' }}>↳ Despesas atribuídas</span>
+                          <span className="text-despesa">− R$ {fmt(totalDespResp)}</span>
+                        </div>
+                      )}
+                      {parcDespGerais > 0 && (
+                        <div className="flex justify-between text-xs">
+                          <span style={{ color: 'var(--text-3)' }}>
+                            ↳ Despesas gerais — parcela (R$ {fmt(despGeraisMes)} ÷ {nParticipantesRateio})
+                          </span>
+                          <span className="text-despesa">− R$ {fmt(parcDespGerais)}</span>
+                        </div>
+                      )}
                     </div>
                   )}
-                  {totalDespResp > 0 && (
-                    <div className="flex justify-between text-xs">
-                      <span style={{ color: 'var(--text-2)' }}>Despesas atribuídas</span>
-                      <span className="text-despesa">− R$ {fmt(totalDespResp)}</span>
-                    </div>
-                  )}
-                  {parcDespGerais > 0 && (
-                    <div className="flex justify-between text-xs">
-                      <span style={{ color: 'var(--text-2)' }}>
-                        Despesas gerais — parcela (R$ {fmt(despGeraisMes)} ÷ {nParticipantesRateio})
-                      </span>
-                      <span className="text-despesa">− R$ {fmt(parcDespGerais)}</span>
-                    </div>
-                  )}
+
                   <div className="flex justify-between text-sm font-semibold pt-2" style={{ borderTop: '1px solid var(--border)' }}>
-                    <span style={{ color: 'var(--text-1)' }}>Total líquido</span>
+                    <span style={{ color: 'var(--text-1)' }}>Total a pagar</span>
                     <span className={liquido >= 0 ? 'text-receita' : 'text-despesa'}>R$ {fmt(liquido)}</span>
                   </div>
                 </div>
               )}
 
-              {/* Fechamento — dentistas do rateio (exceto Marco): A pagar / A receber / 60% PF · 40% PJ */}
+              {/* Fechamento — dentistas do rateio (exceto Marco): Total entradas / saídas / comissões / Total a pagar (com ou sem split PF/PJ) */}
               {usaNovoFormato && calcOld && (
-                <div className="rounded-xl p-4 mb-4 flex flex-col gap-3" style={{ border: '1px solid var(--border)' }}>
-                  <div>
-                    <p className="text-xs font-semibold uppercase tracking-widest mb-1.5 text-despesa">A pagar</p>
-                    <div className="flex flex-col gap-1.5">
-                      <div className="flex justify-between text-xs">
-                        <span style={{ color: 'var(--text-2)' }}>Comissão do dentista ({COMISSAO_MARCO_PCT}%)</span>
-                        <span className="text-despesa">R$ {fmt(calcOld.totalComissao)}</span>
-                      </div>
-                      <div className="flex justify-between text-xs">
-                        <span style={{ color: 'var(--text-2)' }}>
-                          Rateio — despesas gerais {nParticipantesRateio > 0 ? `(R$ ${fmt(despGeraisMes)} ÷ ${nParticipantesRateio})` : ''}
-                        </span>
-                        <span className="text-despesa">R$ {fmt(parcDespGerais)}</span>
-                      </div>
-                      <div className="flex justify-between text-xs">
-                        <span style={{ color: 'var(--text-2)' }}>Despesas atribuídas (clínica adiantou)</span>
-                        <span className="text-despesa">R$ {fmt(totalDespResp)}</span>
-                      </div>
-                      <div className="flex justify-between text-xs font-medium pt-1" style={{ borderTop: '1px dashed var(--border)' }}>
-                        <span style={{ color: 'var(--text-1)' }}>Subtotal a pagar</span>
-                        <span className="text-despesa">R$ {fmt(aPagarNovo)}</span>
-                      </div>
-                    </div>
+                <div className="rounded-xl p-4 mb-4 flex flex-col gap-2" style={{ border: '1px solid var(--border)' }}>
+                  <p className="text-xs font-semibold uppercase tracking-widest mb-1" style={{ color: 'var(--text-3)' }}>
+                    Fechamento de mês
+                  </p>
+                  <div className="flex justify-between text-xs">
+                    <span style={{ color: 'var(--text-2)' }}>Total entradas</span>
+                    <span className="text-receita">R$ {fmt(totalRec)}</span>
                   </div>
-
-                  <div>
-                    <p className="text-xs font-semibold uppercase tracking-widest mb-1.5 text-receita">A receber</p>
-                    <div className="flex flex-col gap-1.5">
-                      <div className="flex justify-between text-xs">
-                        <span style={{ color: 'var(--text-2)' }}>Comissão a receber (rateio de dentistas sem rateio)</span>
-                        <span className="text-receita">R$ {fmt(comissaoAReceberGerada)}</span>
-                      </div>
-                      <div className="flex justify-between text-xs">
-                        <span style={{ color: 'var(--text-2)' }}>Participação em Cirurgia</span>
-                        <span className="text-receita">R$ {fmt(participacaoCirurgia)}</span>
-                      </div>
-                      <div className="flex justify-between text-xs font-medium pt-1" style={{ borderTop: '1px dashed var(--border)' }}>
-                        <span style={{ color: 'var(--text-1)' }}>Subtotal a receber</span>
-                        <span className="text-receita">R$ {fmt(aReceberNovo)}</span>
-                      </div>
-                    </div>
+                  <div className="flex justify-between text-xs">
+                    <span style={{ color: 'var(--text-2)' }}>Total saídas</span>
+                    <span className="text-despesa">R$ {fmt(totalDespResp)}</span>
+                  </div>
+                  <div className="flex justify-between text-xs pt-1" style={{ borderTop: '1px dashed var(--border)' }}>
+                    <span style={{ color: 'var(--text-2)' }}>Total comissões a receber</span>
+                    <span className="text-receita">R$ {fmt(aReceberNovo)}</span>
+                  </div>
+                  <div className="flex justify-between text-xs">
+                    <span style={{ color: 'var(--text-2)' }}>
+                      Despesas Gerais (Rateio) {nParticipantesRateio > 0 ? `(R$ ${fmt(despGeraisMes)} ÷ ${nParticipantesRateio})` : ''}
+                    </span>
+                    <span className="text-despesa">R$ {fmt(parcDespGerais)}</span>
+                  </div>
+                  <div className="flex justify-between text-xs">
+                    <span style={{ color: 'var(--text-2)' }}>Total comissões a pagar ({COMISSAO_MARCO_PCT}% Marco Bianchini)</span>
+                    <span className="text-despesa">R$ {fmt(calcOld.totalComissao)}</span>
                   </div>
 
                   <div className="flex justify-between text-sm font-semibold pt-2" style={{ borderTop: '1px solid var(--border)' }}>
                     <span style={{ color: 'var(--text-1)' }}>
-                      {totalClinica >= 0 ? 'Total a pagar para a clínica' : 'Clínica paga ao dentista'}
+                      {totalClinica >= 0 ? 'Total a pagar' : 'Clínica paga ao dentista'}
                       {ajustado && <span className="text-xs font-normal ml-1" style={{ color: 'var(--text-3)' }}>(ajustado)</span>}
                     </span>
                     <span className={totalClinica >= 0 ? 'text-despesa' : 'text-receita'}>
@@ -1505,13 +1526,13 @@ export default function DentistaFinanceiroPage() {
                     </span>
                   </div>
 
-                  {totalClinica > 0 && (
+                  {totalClinica > 0 && mostraSplitPFPJ && (
                     <div className="flex flex-col gap-1.5 pl-3">
                       <p className="text-xs" style={{ color: 'var(--text-3)' }}>
                         Ajuste manualmente se houver juros de cartão a descontar, adiantamentos a somar etc.
                       </p>
                       <div className="flex justify-between items-center gap-2 text-xs">
-                        <span style={{ color: 'var(--text-3)' }}>↳ Pagamento conta PF (60%)</span>
+                        <span style={{ color: 'var(--text-3)' }}>↳ Total a pagar PF (60%)</span>
                         <div className="flex items-center gap-1 flex-shrink-0">
                           <span style={{ color: 'var(--text-3)' }}>R$</span>
                           <input type="number" step="0.01" placeholder={fmt(valorPFPrev)}
@@ -1521,7 +1542,7 @@ export default function DentistaFinanceiroPage() {
                         </div>
                       </div>
                       <div className="flex justify-between items-center gap-2 text-xs">
-                        <span style={{ color: 'var(--text-3)' }}>↳ Pagamento conta PJ (40%)</span>
+                        <span style={{ color: 'var(--text-3)' }}>↳ Total a pagar PJ (40%)</span>
                         <div className="flex items-center gap-1 flex-shrink-0">
                           <span style={{ color: 'var(--text-3)' }}>R$</span>
                           <input type="number" step="0.01" placeholder={fmt(valorPJPrev)}
