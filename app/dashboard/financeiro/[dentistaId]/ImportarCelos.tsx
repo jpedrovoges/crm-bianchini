@@ -2,6 +2,8 @@
 
 import { useState, useEffect, useRef } from 'react'
 import { supabase } from '@/lib/supabase'
+import { useSession } from '@/app/dashboard/SessionProvider'
+import { bloqueadoPorMesFechado, MES_FECHADO_MSG } from '@/lib/fechamentoMensal'
 
 const MESES = ['Janeiro','Fevereiro','Março','Abril','Maio','Junho','Julho','Agosto','Setembro','Outubro','Novembro','Dezembro']
 
@@ -35,6 +37,7 @@ function parseCurrency(val: unknown): number {
 }
 
 export default function ImportarCelos({ dentistaId, dentistaNome, mes, ano, onImportado }: Props) {
+  const session = useSession()
   const [modal, setModal]             = useState(false)
   const [processando, setProcessando] = useState(false)
   const [salvando, setSalvando]       = useState(false)
@@ -129,6 +132,14 @@ export default function ImportarCelos({ dentistaId, dentistaNome, mes, ano, onIm
     setSalvando(true); setErro(null)
 
     const dataFallback = `${ano}-${String(mes + 1).padStart(2,'0')}-28`
+
+    const bloqueadoDentista = await bloqueadoPorMesFechado(dentistaId, dataFallback, session?.role)
+    const bloqueadoMarco    = marcoId ? await bloqueadoPorMesFechado(marcoId, dataFallback, session?.role) : false
+    if (bloqueadoDentista || bloqueadoMarco) {
+      setErro(MES_FECHADO_MSG)
+      setSalvando(false)
+      return
+    }
 
     // Lançamentos do próprio dentista (valor líquido)
     const insertsD = linhas.map(l => ({

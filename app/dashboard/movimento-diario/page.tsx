@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react'
 import { supabase } from '@/lib/supabase'
 import { useSession } from '@/app/dashboard/SessionProvider'
+import { bloqueadoPorMesFechado, MES_FECHADO_MSG } from '@/lib/fechamentoMensal'
 
 const MESES = ['Janeiro','Fevereiro','Março','Abril','Maio','Junho','Julho','Agosto','Setembro','Outubro','Novembro','Dezembro']
 const DIAS_SEMANA = ['Dom','Seg','Ter','Qua','Qui','Sex','Sáb']
@@ -105,11 +106,21 @@ export default function MovimentoDiarioPage() {
 
   // edição e confirmação de exclusão
   const [editandoId, setEditandoId]       = useState<string | null>(null)
+  const [editandoOriginal, setEditandoOriginal] = useState<{ dentista_id: string | null; dentista_responsavel_id: string | null; data: string } | null>(null)
   const [confirmandoId, setConfirmandoId] = useState<string | null>(null)
   const [confirmarLimparDia, setConfirmarLimparDia] = useState(false)
 
   const session    = useSession()
   const podeEditar = session?.role === 'admin' || session?.role === 'gestor'
+
+  // Checa se algum dos itens toca um dentista com o mês fechado (bloqueia para não-admin)
+  async function haBloqueio(items: { dentista_id?: string | null; dentista_responsavel_id?: string | null; data: string }[]) {
+    const checks = items.flatMap(it => [
+      bloqueadoPorMesFechado(it.dentista_id ?? null, it.data, session?.role),
+      bloqueadoPorMesFechado(it.dentista_responsavel_id ?? null, it.data, session?.role),
+    ])
+    return (await Promise.all(checks)).some(Boolean)
+  }
 
   useEffect(() => {
     supabase.from('pacientes').select('id, nome').order('nome')
@@ -172,6 +183,7 @@ export default function MovimentoDiarioPage() {
   function abrirEdicao(l: Lancamento) {
     setErro(null)
     setEditandoId(l.id)
+    setEditandoOriginal({ dentista_id: l.dentista_id, dentista_responsavel_id: l.dentista_responsavel_id, data: l.data })
     setForm({
       tipo:                    l.tipo,
       descricao:               l.descricao,
@@ -196,6 +208,16 @@ export default function MovimentoDiarioPage() {
 
     if (editandoId) {
       const despComDentista = form.tipo === 'despesa' && !!form.dentista_responsavel_id
+      const dataRegistro = editandoOriginal?.data ?? toISO(ano, mes, diaSelecionado)
+      const bloqueado = await haBloqueio([
+        editandoOriginal ? { ...editandoOriginal } : { data: dataRegistro },
+        {
+          dentista_id: form.tipo === 'receita' ? (form.dentista_id || null) : null,
+          dentista_responsavel_id: despComDentista ? form.dentista_responsavel_id : null,
+          data: dataRegistro,
+        },
+      ])
+      if (bloqueado) { setErro(MES_FECHADO_MSG); setSalvando(false); return }
       const payload = {
         tipo:                    form.tipo,
         descricao:               form.descricao,
@@ -249,6 +271,9 @@ export default function MovimentoDiarioPage() {
       }
     })
 
+    const bloqueado = await haBloqueio(inserts)
+    if (bloqueado) { setErro(MES_FECHADO_MSG); setSalvando(false); return }
+
     const { error } = await supabase.from('lancamentos').insert(inserts)
     if (error) { setErro(error.message); setSalvando(false); return }
 
@@ -297,6 +322,8 @@ export default function MovimentoDiarioPage() {
 
   async function limparDia() {
     if (!diaSelecionado) return
+    const bloqueado = await haBloqueio(lancamentosDia)
+    if (bloqueado) { window.alert(MES_FECHADO_MSG); setConfirmarLimparDia(false); return }
     const ids = lancamentosDia.map(l => l.id)
     await supabase.from('lancamentos').delete().in('id', ids)
     setLancamentosDia([])
@@ -306,6 +333,11 @@ export default function MovimentoDiarioPage() {
   }
 
   async function remover(id: string, origem: 'dia' | 'mes') {
+    const item = (origem === 'dia' ? lancamentosDia : lancamentosMes).find(l => l.id === id)
+    if (item) {
+      const bloqueado = await haBloqueio([item])
+      if (bloqueado) { window.alert(MES_FECHADO_MSG); setConfirmandoId(null); return }
+    }
     await supabase.from('lancamentos').delete().eq('id', id)
     setConfirmandoId(null)
     if (origem === 'dia') {

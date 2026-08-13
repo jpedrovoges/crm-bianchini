@@ -28,7 +28,7 @@ type ConfigImposto = {
 type ConfigDentista = {
   id?: string
   dentista_id: string
-  tipo_conta: 'pessoal' | 'empresa'
+  tipo_conta: 'pessoal' | 'empresa' | 'ambos'
   participa_rateio: boolean
   formas_minha_conta: string[]
 }
@@ -358,10 +358,11 @@ export default function ConfiguracoesPage() {
                           <label className="form-label">Conta de recebimento</label>
                           <select
                             value={conf.tipo_conta}
-                            onChange={e => updateConfDentista(d.id, { tipo_conta: e.target.value as 'pessoal' | 'empresa' })}
+                            onChange={e => updateConfDentista(d.id, { tipo_conta: e.target.value as 'pessoal' | 'empresa' | 'ambos' })}
                             className="form-select">
                             <option value="pessoal">Conta Pessoal (PF)</option>
                             <option value="empresa">Conta Empresa (PJ)</option>
+                            <option value="ambos">Ambos (split PF 60% / PJ 40%)</option>
                           </select>
                         </div>
                         <div>

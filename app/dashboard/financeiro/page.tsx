@@ -4,6 +4,8 @@ import { useState, useEffect } from 'react'
 import Link from 'next/link'
 import { supabase } from '@/lib/supabase'
 import DespesasComuns from './DespesasComuns'
+import { useSession } from '@/app/dashboard/SessionProvider'
+import { bloqueadoPorMesFechado, MES_FECHADO_MSG } from '@/lib/fechamentoMensal'
 
 const MESES = ['Janeiro','Fevereiro','Março','Abril','Maio','Junho','Julho','Agosto','Setembro','Outubro','Novembro','Dezembro']
 
@@ -25,6 +27,7 @@ type Lancamento = {
   destinatarios: { nome: string; tipo: string } | null
   categoria: string | null
   observacao: string | null
+  dentista_id: string | null
 }
 
 type ReceitaClinica = {
@@ -74,6 +77,7 @@ const FORMAS = ['Pix', 'Dinheiro', 'Cartão Crédito', 'Cartão Débito', 'Conv�
 
 export default function FinanceiroPage() {
   const hoje = new Date()
+  const session = useSession()
   const [aba, setAba] = useState<AbaFinanceiro>('lancamentos')
 
   useEffect(() => {
@@ -227,6 +231,11 @@ export default function FinanceiroPage() {
 
   async function emitirNF(id: string) {
     if (!numeroNFEdit.trim()) return
+    const item0 = pendentesNF.find(l => l.id === id)
+    if (item0 && await bloqueadoPorMesFechado(item0.dentista_id, item0.data, session?.role)) {
+      window.alert(MES_FECHADO_MSG)
+      return
+    }
     setSalvandoNF(true)
     const { error } = await supabase
       .from('lancamentos')
