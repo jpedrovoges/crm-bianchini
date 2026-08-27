@@ -2,8 +2,6 @@
 
 import { useState, useEffect } from 'react'
 import { supabase } from '@/lib/supabase'
-import { useSession } from '@/app/dashboard/SessionProvider'
-import { bloqueadoPorMesFechado } from '@/lib/fechamentoMensal'
 
 const MESES = ['Janeiro','Fevereiro','Março','Abril','Maio','Junho','Julho','Agosto','Setembro','Outubro','Novembro','Dezembro']
 const FORMAS = ['Boleto', 'Pix', 'Dinheiro', 'Cartão Crédito', 'Cartão Débito', 'Débito Automático']
@@ -36,7 +34,6 @@ const lancVazio = { valor: '', forma: 'Boleto', data: '' }
 
 export default function DespesasComuns() {
   const hoje = new Date()
-  const session = useSession()
   const [mes, setMes]   = useState(hoje.getMonth())
   const [ano, setAno]   = useState(hoje.getFullYear())
   const [modo, setModo] = useState<'mensal' | 'config'>('mensal')
@@ -189,17 +186,8 @@ export default function DespesasComuns() {
     const data      = toISO(ano, mes, ultimoDia)
     const descricao = `Despesas Comuns - ${MESES[mes]}/${ano}`
 
-    const bloqueios = await Promise.all(
-      participantes.map(async d => ({ d, bloqueado: await bloqueadoPorMesFechado(d.id, data, session?.role) }))
-    )
-    const liberados = bloqueios.filter(b => !b.bloqueado).map(b => b.d)
-    const travados   = bloqueios.filter(b => b.bloqueado).map(b => b.d.nome)
-    if (travados.length > 0) {
-      window.alert(`Mês fechado para: ${travados.join(', ')}. Nenhum lançamento será gerado para ele(s).`)
-    }
-
     await Promise.all(
-      liberados.map(d =>
+      participantes.map(d =>
         supabase.from('lancamentos').insert({
           tipo: 'despesa', descricao, valor: share,
           forma: 'Interno', data, dentista_id: d.id,

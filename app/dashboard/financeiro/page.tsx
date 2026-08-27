@@ -4,8 +4,6 @@ import { useState, useEffect } from 'react'
 import Link from 'next/link'
 import { supabase } from '@/lib/supabase'
 import DespesasComuns from './DespesasComuns'
-import { useSession } from '@/app/dashboard/SessionProvider'
-import { bloqueadoPorMesFechado, MES_FECHADO_MSG } from '@/lib/fechamentoMensal'
 
 const MESES = ['Janeiro','Fevereiro','Março','Abril','Maio','Junho','Julho','Agosto','Setembro','Outubro','Novembro','Dezembro']
 
@@ -28,22 +26,6 @@ type Lancamento = {
   categoria: string | null
   observacao: string | null
   dentista_id: string | null
-}
-
-type ReceitaClinica = {
-  id: string
-  data: string
-  descricao: string
-  valor: number
-  forma: string
-  dentista_id: string
-}
-
-type GrupoClinica = {
-  dentista_id: string
-  nome: string
-  total: number
-  receitas: ReceitaClinica[]
 }
 
 function fmt(v: number) {
@@ -77,7 +59,6 @@ const FORMAS = ['Pix', 'Dinheiro', 'Cartão Crédito', 'Cartão Débito', 'Conv�
 
 export default function FinanceiroPage() {
   const hoje = new Date()
-  const session = useSession()
   const [aba, setAba] = useState<AbaFinanceiro>('lancamentos')
 
   useEffect(() => {
@@ -108,9 +89,6 @@ export default function FinanceiroPage() {
   // dentistas
   const [dentistas, setDentistas] = useState<Dentista[]>([])
 
-  // receitas de dentistas via conta da clínica
-  const [gruposClinica, setGruposClinica] = useState<GrupoClinica[]>([])
-
   // ── Lançamentos ──
   useEffect(() => {
     if (aba !== 'lancamentos') return
@@ -128,58 +106,6 @@ export default function FinanceiroPage() {
       .then(({ data }) => {
         if (data) setLancamentos(data as Lancamento[])
         setLoading(false)
-      })
-  }, [mes, ano, periodo, aba])
-
-  // ── Receitas via conta da clínica ──
-  useEffect(() => {
-    if (aba !== 'lancamentos') return
-    setGruposClinica([])
-    const inicio = periodo === 'mes' ? toISO(ano, mes, 1) : `${ano}-01-01`
-    const fim    = periodo === 'mes' ? toISO(ano, mes, new Date(ano, mes + 1, 0).getDate()) : `${ano}-12-31`
-
-    supabase.from('configuracoes_dentistas').select('dentista_id, formas_minha_conta')
-      .then(async ({ data: cfgData }) => {
-        if (!cfgData) return
-        const withFormas = cfgData.filter(c => c.formas_minha_conta && (c.formas_minha_conta as string[]).length > 0)
-        if (withFormas.length === 0) return
-
-        const formasMap: Record<string, string[]> = Object.fromEntries(
-          withFormas.map(c => [c.dentista_id, c.formas_minha_conta as string[]])
-        )
-        const dentIds = withFormas.map(c => c.dentista_id)
-
-        const [recs, dents] = await Promise.all([
-          supabase.from('lancamentos')
-            .select('id, data, descricao, valor, forma, dentista_id')
-            .eq('tipo', 'receita')
-            .in('dentista_id', dentIds)
-            .gte('data', inicio).lte('data', fim),
-          supabase.from('dentistas').select('id, nome').in('id', dentIds),
-        ])
-
-        if (!recs.data || !dents.data) return
-        const nomeMap: Record<string, string> = Object.fromEntries(dents.data.map(d => [d.id, d.nome]))
-
-        const filtered = (recs.data as ReceitaClinica[]).filter(l =>
-          formasMap[l.dentista_id]?.includes(l.forma)
-        )
-
-        const grouped: Record<string, GrupoClinica> = {}
-        filtered.forEach(l => {
-          if (!grouped[l.dentista_id]) {
-            grouped[l.dentista_id] = {
-              dentista_id: l.dentista_id,
-              nome: nomeMap[l.dentista_id] ?? '?',
-              total: 0,
-              receitas: [],
-            }
-          }
-          grouped[l.dentista_id].total = Math.round((grouped[l.dentista_id].total + l.valor) * 100) / 100
-          grouped[l.dentista_id].receitas.push(l)
-        })
-
-        setGruposClinica(Object.values(grouped).sort((a, b) => b.total - a.total))
       })
   }, [mes, ano, periodo, aba])
 
@@ -231,11 +157,6 @@ export default function FinanceiroPage() {
 
   async function emitirNF(id: string) {
     if (!numeroNFEdit.trim()) return
-    const item0 = pendentesNF.find(l => l.id === id)
-    if (item0 && await bloqueadoPorMesFechado(item0.dentista_id, item0.data, session?.role)) {
-      window.alert(MES_FECHADO_MSG)
-      return
-    }
     setSalvandoNF(true)
     const { error } = await supabase
       .from('lancamentos')
@@ -258,14 +179,10 @@ export default function FinanceiroPage() {
   const totalRec  = receitas.reduce((s, l) => s + l.valor, 0)
   const totalDesp = despesas.reduce((s, l) => s + l.valor, 0)
 
-  const clinicaReceitas = gruposClinica.flatMap(g => g.receitas)
-  const totalRecGlobal  = totalRec + gruposClinica.reduce((s, g) => s + g.total, 0)
-
   const porForma = FORMAS.map(forma => {
-    const movs     = receitas.filter(l => l.forma === forma)
-    const movsClin = clinicaReceitas.filter(l => l.forma === forma)
-    const total    = movs.reduce((s, l) => s + l.valor, 0) + movsClin.reduce((s, l) => s + l.valor, 0)
-    const count    = movs.length + movsClin.length
+    const movs  = receitas.filter(l => l.forma === forma)
+    const total = movs.reduce((s, l) => s + l.valor, 0)
+    const count = movs.length
     return { forma, total, count }
   }).filter(f => f.count > 0)
 
@@ -276,11 +193,10 @@ export default function FinanceiroPage() {
   const datas = Object.keys(porData).sort((a, b) => b.localeCompare(a))
 
   const porMes = Array.from({ length: 12 }, (_, i) => {
-    const mesStr    = String(i + 1).padStart(2, '0')
-    const movs      = lancamentos.filter(l => l.data.startsWith(`${ano}-${mesStr}`))
-    const movsClin  = clinicaReceitas.filter(l => l.data.startsWith(`${ano}-${mesStr}`))
-    const rec  = movs.filter(l => l.tipo === 'receita').reduce((s, l) => s + l.valor, 0) + movsClin.reduce((s, l) => s + l.valor, 0)
-    const desp = movs.filter(l => l.tipo === 'despesa').reduce((s, l) => s + l.valor, 0)
+    const mesStr = String(i + 1).padStart(2, '0')
+    const movs   = lancamentos.filter(l => l.data.startsWith(`${ano}-${mesStr}`))
+    const rec    = movs.filter(l => l.tipo === 'receita').reduce((s, l) => s + l.valor, 0)
+    const desp   = movs.filter(l => l.tipo === 'despesa').reduce((s, l) => s + l.valor, 0)
     return { mes: i, rec, desp, saldo: rec - desp }
   })
 
@@ -357,8 +273,8 @@ export default function FinanceiroPage() {
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-8">
                 <div className="card-p5">
                   <p className="card-label">Receitas</p>
-                  <p className="card-value text-receita">R$ {fmt(totalRecGlobal)}</p>
-                  <p className="card-sub">{receitas.length + clinicaReceitas.length} lançamento(s)</p>
+                  <p className="card-value text-receita">R$ {fmt(totalRec)}</p>
+                  <p className="card-sub">{receitas.length} lançamento(s)</p>
                 </div>
                 <div className="card-p5">
                   <p className="card-label">Despesas</p>
@@ -367,10 +283,10 @@ export default function FinanceiroPage() {
                 </div>
                 <div className="card-p5">
                   <p className="card-label">Saldo</p>
-                  <p className={`card-value ${totalRecGlobal - totalDesp >= 0 ? 'text-receita' : 'text-despesa'}`}>
-                    R$ {fmt(totalRecGlobal - totalDesp)}
+                  <p className={`card-value ${totalRec - totalDesp >= 0 ? 'text-receita' : 'text-despesa'}`}>
+                    R$ {fmt(totalRec - totalDesp)}
                   </p>
-                  <p className="card-sub">{lancamentos.length + clinicaReceitas.length} no total</p>
+                  <p className="card-sub">{lancamentos.length} no total</p>
                 </div>
               </div>
 
@@ -418,7 +334,7 @@ export default function FinanceiroPage() {
                             <div className="w-full h-1 rounded-full" style={{ backgroundColor: 'var(--surface-muted)' }}>
                               <div
                                 className="h-1 rounded-full bg-emerald-400"
-                                style={{ width: `${totalRecGlobal > 0 ? (f.total / totalRecGlobal) * 100 : 0}%` }}
+                                style={{ width: `${totalRec > 0 ? (f.total / totalRec) * 100 : 0}%` }}
                               />
                             </div>
                           </div>
@@ -482,41 +398,6 @@ export default function FinanceiroPage() {
                   )}
                 </div>
               </div>
-              )}
-
-              {/* Receitas via conta da clínica */}
-              {gruposClinica.length > 0 && (
-                <div className="card-p5 mt-6">
-                  <div className="flex items-center justify-between mb-1">
-                    <h2 className="widget-title">Receitas via Conta da Clínica</h2>
-                    <span className="text-sm font-semibold text-receita">
-                      R$ {fmt(gruposClinica.reduce((s, g) => s + g.total, 0))}
-                    </span>
-                  </div>
-                  <p className="card-sub mb-4">Pagamentos de dentistas recebidos pela clínica para repasse no fechamento</p>
-                  <div className="flex flex-col gap-5">
-                    {gruposClinica.map(g => (
-                      <div key={g.dentista_id}>
-                        <div className="flex items-center justify-between mb-2">
-                          <p className="text-sm font-semibold" style={{ color: 'var(--text-1)' }}>{g.nome}</p>
-                          <span className="text-sm font-medium text-receita">R$ {fmt(g.total)}</span>
-                        </div>
-                        <div className="flex flex-col gap-1.5">
-                          {g.receitas.map(r => (
-                            <div key={r.id} className="movimento-item">
-                              <div className="dot-receita" />
-                              <div className="flex-1 min-w-0">
-                                <p className="mov-desc">{r.descricao}</p>
-                                <p className="mov-meta">{r.data.split('-').reverse().join('/')} · {r.forma}</p>
-                              </div>
-                              <span className="text-sm font-medium text-receita flex-shrink-0">R$ {fmt(r.valor)}</span>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
               )}
             </>
           )}

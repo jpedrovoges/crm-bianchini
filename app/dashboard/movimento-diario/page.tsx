@@ -3,7 +3,6 @@
 import { useState, useEffect } from 'react'
 import { supabase } from '@/lib/supabase'
 import { useSession } from '@/app/dashboard/SessionProvider'
-import { bloqueadoPorMesFechado, MES_FECHADO_MSG } from '@/lib/fechamentoMensal'
 
 const MESES = ['Janeiro','Fevereiro','Março','Abril','Maio','Junho','Julho','Agosto','Setembro','Outubro','Novembro','Dezembro']
 const DIAS_SEMANA = ['Dom','Seg','Ter','Qua','Qui','Sex','Sáb']
@@ -38,7 +37,7 @@ type Dentista     = { id: string; nome: string }
 
 const formVazio = {
   tipo:                   'receita' as 'receita' | 'despesa',
-  descricao:              '',
+  descricao:              'Procedimento',
   valor:                  '',
   forma:                  'Pix',
   paciente_id:            '',
@@ -106,20 +105,22 @@ export default function MovimentoDiarioPage() {
 
   // edição e confirmação de exclusão
   const [editandoId, setEditandoId]       = useState<string | null>(null)
-  const [editandoOriginal, setEditandoOriginal] = useState<{ dentista_id: string | null; dentista_responsavel_id: string | null; data: string } | null>(null)
   const [confirmandoId, setConfirmandoId] = useState<string | null>(null)
   const [confirmarLimparDia, setConfirmarLimparDia] = useState(false)
+
+  // edição do número da NF (recepção, apenas dentistas que emitem nota fiscal)
+  const [editandoNFId, setEditandoNFId] = useState<string | null>(null)
+  const [formNF, setFormNF]             = useState('')
+  const [salvandoNF, setSalvandoNF]     = useState(false)
 
   const session    = useSession()
   const podeEditar = session?.role === 'admin' || session?.role === 'gestor'
 
-  // Checa se algum dos itens toca um dentista com o mês fechado (bloqueia para não-admin)
-  async function haBloqueio(items: { dentista_id?: string | null; dentista_responsavel_id?: string | null; data: string }[]) {
-    const checks = items.flatMap(it => [
-      bloqueadoPorMesFechado(it.dentista_id ?? null, it.data, session?.role),
-      bloqueadoPorMesFechado(it.dentista_responsavel_id ?? null, it.data, session?.role),
-    ])
-    return (await Promise.all(checks)).some(Boolean)
+  // Dentistas que emitem nota fiscal e cuja recepção pode preencher o número da NF
+  function dentistaEmiteNF(dentistaId: string | null) {
+    const nome = listaDentistas.find(d => d.id === dentistaId)?.nome ?? ''
+    const norm = nome.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase()
+    return norm.includes('moises') || norm.includes('raissa')
   }
 
   useEffect(() => {
@@ -180,10 +181,23 @@ export default function MovimentoDiarioPage() {
   }
 
   // ── CRUD ──
+  // Descrição é derivada automaticamente: nome do paciente (receita) ou do
+  // destinatário/dentista responsável (despesa) — não há mais campo livre.
+  function computeDescricao(f: typeof form): string {
+    if (f.tipo === 'receita') {
+      const paciente = pacientes.find(p => p.id === f.paciente_id)
+      if (paciente) return paciente.nome
+      return f.categoria === 'venda' ? 'Venda' : (f.observacao.trim() || 'Procedimento')
+    }
+    const dentista = listaDentistas.find(d => d.id === f.dentista_responsavel_id)
+    if (dentista) return `Despesa - ${dentista.nome}`
+    const dest = destinatarios.find(d => d.id === f.destinatario_id)
+    return dest?.nome ?? 'Despesa'
+  }
+
   function abrirEdicao(l: Lancamento) {
     setErro(null)
     setEditandoId(l.id)
-    setEditandoOriginal({ dentista_id: l.dentista_id, dentista_responsavel_id: l.dentista_responsavel_id, data: l.data })
     setForm({
       tipo:                    l.tipo,
       descricao:               l.descricao,
@@ -202,22 +216,28 @@ export default function MovimentoDiarioPage() {
     setModal(true)
   }
 
+  function abrirEdicaoNF(l: Lancamento) {
+    setEditandoNFId(l.id)
+    setFormNF(l.numero_nf ?? '')
+  }
+
+  async function salvarNF() {
+    if (!editandoNFId) return
+    setSalvandoNF(true)
+    const numero = formNF.trim() || null
+    const { error } = await supabase.from('lancamentos').update({ numero_nf: numero }).eq('id', editandoNFId)
+    if (error) { setSalvandoNF(false); return }
+    setLancamentosDia(prev => prev.map(l => l.id === editandoNFId ? { ...l, numero_nf: numero } : l))
+    setLancamentosMes(prev => prev.map(l => l.id === editandoNFId ? { ...l, numero_nf: numero } : l))
+    setSalvandoNF(false); setEditandoNFId(null); setFormNF('')
+  }
+
   async function salvar() {
     if (!form.descricao || !form.valor || !diaSelecionado) return
     setSalvando(true); setErro(null)
 
     if (editandoId) {
       const despComDentista = form.tipo === 'despesa' && !!form.dentista_responsavel_id
-      const dataRegistro = editandoOriginal?.data ?? toISO(ano, mes, diaSelecionado)
-      const bloqueado = await haBloqueio([
-        editandoOriginal ? { ...editandoOriginal } : { data: dataRegistro },
-        {
-          dentista_id: form.tipo === 'receita' ? (form.dentista_id || null) : null,
-          dentista_responsavel_id: despComDentista ? form.dentista_responsavel_id : null,
-          data: dataRegistro,
-        },
-      ])
-      if (bloqueado) { setErro(MES_FECHADO_MSG); setSalvando(false); return }
       const payload = {
         tipo:                    form.tipo,
         descricao:               form.descricao,
@@ -271,9 +291,6 @@ export default function MovimentoDiarioPage() {
       }
     })
 
-    const bloqueado = await haBloqueio(inserts)
-    if (bloqueado) { setErro(MES_FECHADO_MSG); setSalvando(false); return }
-
     const { error } = await supabase.from('lancamentos').insert(inserts)
     if (error) { setErro(error.message); setSalvando(false); return }
 
@@ -322,8 +339,6 @@ export default function MovimentoDiarioPage() {
 
   async function limparDia() {
     if (!diaSelecionado) return
-    const bloqueado = await haBloqueio(lancamentosDia)
-    if (bloqueado) { window.alert(MES_FECHADO_MSG); setConfirmarLimparDia(false); return }
     const ids = lancamentosDia.map(l => l.id)
     await supabase.from('lancamentos').delete().in('id', ids)
     setLancamentosDia([])
@@ -333,11 +348,6 @@ export default function MovimentoDiarioPage() {
   }
 
   async function remover(id: string, origem: 'dia' | 'mes') {
-    const item = (origem === 'dia' ? lancamentosDia : lancamentosMes).find(l => l.id === id)
-    if (item) {
-      const bloqueado = await haBloqueio([item])
-      if (bloqueado) { window.alert(MES_FECHADO_MSG); setConfirmandoId(null); return }
-    }
     await supabase.from('lancamentos').delete().eq('id', id)
     setConfirmandoId(null)
     if (origem === 'dia') {
@@ -392,13 +402,14 @@ export default function MovimentoDiarioPage() {
     )
   }
 
-  function LancamentoRow({ l, onRemove, confirmando, onConfirmar, onCancelar, onEditar }: {
+  function LancamentoRow({ l, onRemove, confirmando, onConfirmar, onCancelar, onEditar, onEditarNF }: {
     l: Lancamento
     onRemove?: () => void
     confirmando?: boolean
     onConfirmar?: () => void
     onCancelar?: () => void
     onEditar?: () => void
+    onEditarNF?: () => void
   }) {
     const vinculo       = l.tipo === 'receita' ? (l.pacientes?.nome ?? null) : (l.destinatarios?.nome ?? null)
     const catLabel      = l.categoria === 'venda' ? 'Venda' : l.categoria === 'procedimento' ? 'Procedimento' : null
@@ -423,6 +434,11 @@ export default function MovimentoDiarioPage() {
         <p className={`text-sm font-medium flex-shrink-0 ${l.tipo === 'receita' ? 'text-receita' : 'text-despesa'}`}>
           {l.tipo === 'receita' ? '+' : '-'} R$ {fmt(l.valor)}
         </p>
+        {onEditarNF && !confirmando && (
+          <button onClick={onEditarNF} className="nav-icon hover:text-[var(--text-1)] transition-colors flex-shrink-0 text-xs font-semibold" title="Preencher número da NF">
+            NF
+          </button>
+        )}
         {onEditar && !confirmando && (
           <button onClick={onEditar} className="nav-icon hover:text-[var(--text-1)] transition-colors flex-shrink-0" title="Editar">
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -547,6 +563,7 @@ export default function MovimentoDiarioPage() {
                         onConfirmar={() => setConfirmandoId(l.id)}
                         onCancelar={() => setConfirmandoId(null)}
                         onEditar={podeEditar ? () => abrirEdicao(l) : undefined}
+                        onEditarNF={!podeEditar && session?.role === 'recepcao' && l.tipo === 'receita' && l.nota_fiscal && dentistaEmiteNF(l.dentista_id) ? () => abrirEdicaoNF(l) : undefined}
                       />
                     ))}</div>
                 }
@@ -567,7 +584,7 @@ export default function MovimentoDiarioPage() {
             </div>
             <p className="page-subtitle text-xs">{lancamentosMes.length} lançamento(s)</p>
           </div>
-          <SummaryCards rec={recMes} desp={despMes} />
+          {session?.role !== 'recepcao' && <SummaryCards rec={recMes} desp={despMes} />}
           {lancamentosMes.length === 0
             ? <div className="empty-state"><div className="empty-icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="nav-icon"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M3 9h18M8 2v4M16 2v4"/></svg></div><p className="page-subtitle text-sm">Nenhuma movimentação em {MESES[mes]}</p></div>
             : <div className="card-p5 flex flex-col gap-6">
@@ -591,6 +608,7 @@ export default function MovimentoDiarioPage() {
                           onConfirmar={() => setConfirmandoId(l.id)}
                           onCancelar={() => setConfirmandoId(null)}
                           onEditar={podeEditar ? () => abrirEdicao(l) : undefined}
+                          onEditarNF={!podeEditar && session?.role === 'recepcao' && l.tipo === 'receita' && l.nota_fiscal && dentistaEmiteNF(l.dentista_id) ? () => abrirEdicaoNF(l) : undefined}
                         />
                       ))}</div>
                     </div>
@@ -609,12 +627,14 @@ export default function MovimentoDiarioPage() {
             <span className="page-title text-sm">{ano}</span>
             <button onClick={() => setAno(a => a + 1)} className="btn-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M9 18l6-6-6-6"/></svg></button>
           </div>
-          <SummaryCards rec={recAno} desp={despAno} />
+          {session?.role !== 'recepcao' && <SummaryCards rec={recAno} desp={despAno} />}
           <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
             {resumoPorMes.map(rm => (
               <button key={rm.mes} onClick={() => { setMes(rm.mes); setVisao('mensal') }} className="card-p5 text-left w-full">
                 <p className="text-xs font-semibold text-[var(--text-2)] uppercase tracking-wider mb-3">{MESES[rm.mes]}</p>
-                {rm.count === 0
+                {session?.role === 'recepcao'
+                  ? <p className="card-sub text-xs">{rm.count} lançamento(s)</p>
+                  : rm.count === 0
                   ? <p className="card-sub text-xs">Sem movimentações</p>
                   : <div className="flex flex-col gap-1">
                       {rm.rec  > 0 && <p className="text-xs text-receita">+ R$ {fmt(rm.rec)}</p>}
@@ -692,6 +712,28 @@ export default function MovimentoDiarioPage() {
         </div>
       )}
 
+      {/* ── Modal: Número da Nota Fiscal ── */}
+      {editandoNFId && (
+        <div className="modal-overlay" style={{ zIndex: 60 }}>
+          <div className="modal max-w-sm">
+            <div className="modal-header">
+              <h3 className="modal-title">Número da Nota Fiscal</h3>
+              <button onClick={() => { setEditandoNFId(null); setFormNF('') }} className="nav-icon hover:text-red-400 transition-colors"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 6L6 18M6 6l12 12"/></svg></button>
+            </div>
+            <div>
+              <label className="form-label">Número da NF <span className="nav-icon">(opcional)</span></label>
+              <input type="text" value={formNF} onChange={e => setFormNF(e.target.value)} placeholder="Ex: 000123" className="form-input" autoFocus />
+            </div>
+            <div className="flex gap-2 mt-5">
+              <button onClick={() => { setEditandoNFId(null); setFormNF('') }} className="btn-secondary flex-1 py-2">Cancelar</button>
+              <button onClick={salvarNF} disabled={salvandoNF} className="btn-primary flex-1 py-2">
+                {salvandoNF ? 'Salvando...' : 'Salvar'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* ── Modal: Nova / Editar Movimentação ── */}
       {modal && (
         <div className="modal-overlay">
@@ -704,7 +746,10 @@ export default function MovimentoDiarioPage() {
             <div className="flex gap-2 mb-4">
               {(['receita', 'despesa'] as const).map(t => (
                 <button key={t}
-                  onClick={() => setForm(f => ({ ...f, tipo: t, paciente_id: '', destinatario_id: '', dentista_id: '', dentista_responsavel_id: '', nota_fiscal: false, numero_nf: '', categoria: 'procedimento', observacao: '' }))}
+                  onClick={() => setForm(f => {
+                    const next = { ...f, tipo: t, paciente_id: '', destinatario_id: '', dentista_id: '', dentista_responsavel_id: '', nota_fiscal: false, numero_nf: '', categoria: 'procedimento' as const, observacao: '' }
+                    return { ...next, descricao: computeDescricao(next) }
+                  })}
                   className={`tipo-btn ${form.tipo === t ? (t === 'receita' ? 'tipo-receita-active' : 'tipo-despesa-active') : ''}`}>
                   {t === 'receita' ? 'Receita' : 'Despesa'}
                 </button>
@@ -712,10 +757,6 @@ export default function MovimentoDiarioPage() {
             </div>
 
             <div className="flex flex-col gap-3">
-              <div>
-                <label className="form-label">Descrição</label>
-                <input type="text" value={form.descricao} onChange={e => setForm(f => ({ ...f, descricao: e.target.value }))} placeholder="Ex: Limpeza, Material..." className="form-input" />
-              </div>
               <div>
                 <label className="form-label">Valor (R$)</label>
                 <input type="number" value={form.valor} onChange={e => setForm(f => ({ ...f, valor: e.target.value }))} placeholder="0,00" className="form-input" />
@@ -752,7 +793,10 @@ export default function MovimentoDiarioPage() {
                     <div className="flex gap-2">
                       {(['procedimento', 'venda'] as const).map(cat => (
                         <button key={cat} type="button"
-                          onClick={() => setForm(f => ({ ...f, categoria: cat, observacao: cat === 'venda' ? '' : f.observacao }))}
+                          onClick={() => setForm(f => {
+                            const next = { ...f, categoria: cat, observacao: cat === 'venda' ? '' : f.observacao }
+                            return { ...next, descricao: computeDescricao(next) }
+                          })}
                           className={`tipo-btn flex-1 py-1.5 text-xs ${form.categoria === cat ? 'bg-[var(--surface-muted)] border-[var(--border-hover)] text-[var(--text-1)] font-medium' : ''}`}>
                           {cat === 'procedimento' ? 'Procedimento' : 'Venda'}
                         </button>
@@ -763,7 +807,10 @@ export default function MovimentoDiarioPage() {
                     <div>
                       <label className="form-label">Observação <span className="nav-icon">(opcional)</span></label>
                       <input type="text" value={form.observacao}
-                        onChange={e => setForm(f => ({ ...f, observacao: e.target.value }))}
+                        onChange={e => setForm(f => {
+                          const next = { ...f, observacao: e.target.value }
+                          return { ...next, descricao: computeDescricao(next) }
+                        })}
                         placeholder="Ex: Profilaxia + aplicação de flúor"
                         className="form-input" />
                     </div>
@@ -783,7 +830,10 @@ export default function MovimentoDiarioPage() {
                       <button type="button" onClick={() => setModalPaciente(true)} className="text-xs transition-colors" style={{ color: 'var(--accent)' }}>+ Novo paciente</button>
                     </div>
                     <select value={form.paciente_id}
-                      onChange={e => setForm(f => ({ ...f, paciente_id: e.target.value, nota_fiscal: e.target.value ? f.nota_fiscal : false, numero_nf: e.target.value ? f.numero_nf : '' }))}
+                      onChange={e => setForm(f => {
+                        const next = { ...f, paciente_id: e.target.value, nota_fiscal: e.target.value ? f.nota_fiscal : false, numero_nf: e.target.value ? f.numero_nf : '' }
+                        return { ...next, descricao: computeDescricao(next) }
+                      })}
                       className="form-select">
                       <option value="">— Nenhum —</option>
                       {pacientes.map(p => <option key={p.id} value={p.id}>{p.nome}</option>)}
@@ -818,14 +868,17 @@ export default function MovimentoDiarioPage() {
                   <label className="form-label">Dentista responsável <span className="nav-icon">(opcional)</span></label>
                   <select
                     value={form.dentista_responsavel_id}
-                    onChange={e => setForm(f => ({ ...f, dentista_responsavel_id: e.target.value, destinatario_id: '' }))}
+                    onChange={e => setForm(f => {
+                      const next = { ...f, dentista_responsavel_id: e.target.value, destinatario_id: '' }
+                      return { ...next, descricao: computeDescricao(next) }
+                    })}
                     className="form-select">
                     <option value="">— Sem dentista (despesa geral) —</option>
                     {listaDentistas.map(d => <option key={d.id} value={d.id}>{d.nome}</option>)}
                   </select>
                   {form.dentista_responsavel_id && (
                     <p className="text-xs mt-1.5" style={{ color: 'var(--text-3)' }}>
-                      Despesa descontada do lucro do dentista no fechamento do mês. Forma de pagamento não necessária.
+                      Despesa descontada do lucro do dentista. Forma de pagamento não necessária.
                     </p>
                   )}
                 </div>
@@ -838,7 +891,10 @@ export default function MovimentoDiarioPage() {
                     <label className="form-label mb-0">Destinatário <span className="nav-icon">(opcional)</span></label>
                     <button type="button" onClick={() => setModalDestinatario(true)} className="text-xs transition-colors" style={{ color: 'var(--accent)' }}>+ Novo</button>
                   </div>
-                  <select value={form.destinatario_id} onChange={e => setForm(f => ({ ...f, destinatario_id: e.target.value }))} className="form-select">
+                  <select value={form.destinatario_id} onChange={e => setForm(f => {
+                    const next = { ...f, destinatario_id: e.target.value }
+                    return { ...next, descricao: computeDescricao(next) }
+                  })} className="form-select">
                     <option value="">— Nenhum —</option>
                     {dentistas.length > 0 && (
                       <optgroup label="Dentistas">

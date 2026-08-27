@@ -6,7 +6,6 @@ import Link from 'next/link'
 import { supabase } from '@/lib/supabase'
 import ImportarCelos from './ImportarCelos'
 import { useSession } from '@/app/dashboard/SessionProvider'
-import { buscarFechamento, mesEstaFechado, type FechamentoMensal } from '@/lib/fechamentoMensal'
 
 const MESES = ['Janeiro','Fevereiro','Março','Abril','Maio','Junho','Julho','Agosto','Setembro','Outubro','Novembro','Dezembro']
 const FORMAS = ['Pix', 'Dinheiro', 'Cartão Crédito', 'Cartão Débito', 'Convênio', 'Rateio', 'Desconto']
@@ -63,15 +62,6 @@ type DespesaResponsavel = {
   descricao: string
   valor: number
   forma: string
-}
-
-type ConfigRateio = {
-  id: string
-  percentual_dentista: number
-  percentual_marco: number
-  percentual_outros: number
-  marco_dentista_id: string | null
-  dentistas_rateio: string[]
 }
 
 function fmt(v: number) {
@@ -133,32 +123,6 @@ export default function DentistaFinanceiroPage() {
   // Despesas do movimento diário atribuídas a este dentista
   const [despesasResponsavel, setDespesasResponsavel] = useState<DespesaResponsavel[]>([])
 
-  // Fechar mês
-  const [modalFecharMes, setModalFecharMes] = useState(false)
-  const [configRateio, setConfigRateio] = useState<ConfigRateio | null>(null)
-  const [impostosConfig, setImpostosConfig] = useState<Record<string, number>>({})
-  const [participaRateio, setParticipaRateio] = useState(false)       // vem da config
-  const [tipoConta, setTipoConta] = useState<'pessoal' | 'empresa' | 'ambos'>('pessoal') // vem da config
-  const [participaRateioModal, setParticipaRateioModal] = useState(false) // pode ser ajustado no modal
-  const [labTotal, setLabTotal] = useState('')
-  const [fechandoMes, setFechandoMes] = useState(false)
-  const [erroFechamento, setErroFechamento] = useState<string | null>(null)
-  const [despGeraisMes, setDespGeraisMes]             = useState(0)
-  const [nParticipantesRateio, setNParticipantesRateio] = useState(0)
-  const [parcDespGerais, setParcDespGerais]             = useState(0)
-  // Fechar mês — modo "sem rateio" (clínica retém e distribui: Marco + outros dentistas)
-  const [marcoValorRateio, setMarcoValorRateio] = useState('')
-  const [outrosRateio, setOutrosRateio] = useState<{ dentistaId: string; nome: string; valor: string }[]>([])
-  // Fechar mês — novo formato (rateio, exceto Marco): ajuste manual do valor final PF/PJ
-  // (ex: descontar juros de cartão, somar adiantamentos) — admin e gestor podem sobrescrever.
-  const [valorPFOverride, setValorPFOverride] = useState('')
-  const [valorPJOverride, setValorPJOverride] = useState('')
-
-  // Cadeado de mês fechado
-  const [fechamento, setFechamento] = useState<FechamentoMensal | null>(null)
-  const [reabrindoMes, setReabrindoMes] = useState(false)
-  const [confirmandoReabrir, setConfirmandoReabrir] = useState(false)
-
   useEffect(() => {
     supabase.from('dentistas').select('nome').eq('id', dentistaId).single()
       .then(({ data }) => { if (data) setDentistaNome(data.nome) })
@@ -171,36 +135,6 @@ export default function DentistaFinanceiroPage() {
     supabase.from('dentistas').select('id, nome').eq('ativo', true).order('nome')
       .then(({ data }) => { if (data) setListaDentistas(data) })
   }, [])
-
-  // Carrega configs de impostos e rateio (usados no preview e no fechar mês)
-  useEffect(() => {
-    supabase.from('configuracoes_impostos').select('*')
-      .then(({ data }) => {
-        if (!data) return
-        const map: Record<string, number> = {}
-        data.forEach((i: { forma_pagamento: string; tem_imposto: boolean; percentual_imposto: number }) => {
-          map[i.forma_pagamento] = i.tem_imposto ? i.percentual_imposto : 0
-        })
-        setImpostosConfig(map)
-      })
-    supabase.from('configuracoes_dentistas')
-      .select('participa_rateio, tipo_conta').eq('dentista_id', dentistaId).single()
-      .then(({ data }) => {
-        setParticipaRateio(data?.participa_rateio ?? true)
-        setTipoConta((data?.tipo_conta as 'pessoal' | 'empresa' | 'ambos') ?? 'pessoal')
-      })
-    supabase.from('configuracoes_rateio').select('*').limit(1).single()
-      .then(({ data }) => {
-        if (!data) return
-        setConfigRateio({ ...data, dentistas_rateio: (data.dentistas_rateio as string[]) ?? [] } as ConfigRateio)
-      })
-  }, [dentistaId])
-
-  // Status de fechamento (cadeado) do mês corrente
-  useEffect(() => {
-    if (periodo !== 'mes') { setFechamento(null); return }
-    buscarFechamento(dentistaId, ano, mes).then(setFechamento)
-  }, [dentistaId, ano, mes, periodo, refreshKey])
 
   useEffect(() => {
     setLoading(true)
@@ -315,270 +249,6 @@ export default function DentistaFinanceiroPage() {
     setRepasses(prev => ({ ...prev, [lancId]: (prev[lancId] ?? []).filter(r => r.id !== repasseId) }))
   }
 
-  async function abrirFecharMes() {
-    setErroFechamento(null)
-    setLabTotal('')
-    setParticipaRateioModal(participaRateio)
-    setMarcoValorRateio('')
-    setOutrosRateio([])
-    setValorPFOverride('')
-    setValorPJOverride('')
-
-    const inicioMes = toISO(ano, mes, 1)
-    const fimMes    = toISO(ano, mes, new Date(ano, mes + 1, 0).getDate())
-
-    const [cfgRateioRes, despGeraisRes, ativosRes, naoParticipamRes] = await Promise.all([
-      supabase.from('configuracoes_rateio').select('*').limit(1).single(),
-      supabase.from('lancamentos')
-        .select('valor')
-        .eq('tipo', 'despesa')
-        .is('dentista_id', null)
-        .is('dentista_responsavel_id', null)
-        .gte('data', inicioMes).lte('data', fimMes),
-      supabase.from('dentistas').select('id', { count: 'exact', head: true }).eq('ativo', true),
-      supabase.from('configuracoes_dentistas').select('dentista_id', { count: 'exact', head: true }).eq('participa_rateio', false),
-    ])
-
-    const cfgRateio = cfgRateioRes.data
-      ? ({ ...cfgRateioRes.data, dentistas_rateio: (cfgRateioRes.data.dentistas_rateio as string[]) ?? [] } as ConfigRateio)
-      : null
-    if (cfgRateio) setConfigRateio(cfgRateio)
-
-    const totalDesp  = (despGeraisRes.data ?? []).reduce((s: number, l: { valor: number }) => s + l.valor, 0)
-    const nAtivos    = ativosRes.count ?? 0
-    const nNaoPartic = naoParticipamRes.count ?? 0
-    const nParticip  = Math.max(1, nAtivos - nNaoPartic)
-    const parc       = participaRateio && totalDesp > 0 ? Math.round(totalDesp / nParticip * 100) / 100 : 0
-
-    setDespGeraisMes(totalDesp)
-    setNParticipantesRateio(nParticip)
-    setParcDespGerais(parc)
-
-    // Modo "sem rateio": pré-preenche Marco e outros dentistas com base nos percentuais
-    // configurados, sobre o faturamento líquido (impostos, sem laboratório ainda). Editável depois.
-    if (!participaRateio && cfgRateio) {
-      let totalImpostosPrev = 0
-      for (const l of receitas) totalImpostosPrev += l.valor * (impostosConfig[l.forma] ?? 0) / 100
-      totalImpostosPrev = Math.round(totalImpostosPrev * 100) / 100
-      const baseRateioPrev = Math.max(0, totalRec - totalImpostosPrev)
-
-      const marcoDefault = Math.round(baseRateioPrev * cfgRateio.percentual_marco / 100 * 100) / 100
-      setMarcoValorRateio(marcoDefault > 0 ? String(marcoDefault) : '')
-
-      const outrosTotalDefault = Math.round(baseRateioPrev * cfgRateio.percentual_outros / 100 * 100) / 100
-      const recipIds = cfgRateio.dentistas_rateio.filter(id => id !== dentistaId)
-      const each = recipIds.length > 0 ? Math.round((outrosTotalDefault / recipIds.length) * 100) / 100 : 0
-      setOutrosRateio(recipIds.map(id => ({
-        dentistaId: id,
-        nome: listaDentistas.find(d => d.id === id)?.nome ?? '...',
-        valor: each > 0 ? String(each) : '',
-      })))
-    }
-
-    setModalFecharMes(true)
-  }
-
-  const COMISSAO_MARCO_PCT = 13
-
-  function calcFechamento(labVal: number, comRateio: boolean) {
-    // Para quem usa o novo formato (rateio, exceto Marco), lançamentos forma 'Rateio' são
-    // comissão já recebida de outros dentistas — não entram na base de impostos/comissão de
-    // novo (senão o dentista pagaria 13% sobre dinheiro que já é uma redistribuição de rateio).
-    const receitasBase = usaNovoFormato ? receitas.filter(l => l.forma !== 'Rateio') : receitas
-    const totalRecBase = receitasBase.reduce((s, l) => s + l.valor, 0)
-    let totalImpostos = 0
-    for (const l of receitasBase) {
-      const impPct = impostosConfig[l.forma] ?? 0
-      totalImpostos += l.valor * impPct / 100
-    }
-    totalImpostos = Math.round(totalImpostos * 100) / 100
-    const baseComissao  = Math.max(0, totalRecBase - totalImpostos - labVal)
-    const totalComissao = comRateio ? Math.round(baseComissao * COMISSAO_MARCO_PCT / 100 * 100) / 100 : 0
-    const aReceber      = Math.round((totalRecBase - totalImpostos - labVal - totalComissao) * 100) / 100
-    const liquido       = Math.round((aReceber + totalRecebidos - totalDespResp - parcDespGerais) * 100) / 100
-    return { totalImpostos, totalComissao, aReceber, liquido, baseComissao, totalRecBase, receitasCount: receitasBase.length }
-  }
-
-  // Fechamento para quem não participa do rateio: a clínica retém o faturamento e paga
-  // Marco Bianchini + outros dentistas do rateio com valores livremente ajustáveis (variam por mês).
-  function calcFechamentoSemRateio(labVal: number, marcoValor: number, outrosTotal: number) {
-    let totalImpostos = 0
-    for (const l of receitas) {
-      const impPct = impostosConfig[l.forma] ?? 0
-      totalImpostos += l.valor * impPct / 100
-    }
-    totalImpostos = Math.round(totalImpostos * 100) / 100
-    const baseRateio = Math.max(0, totalRec - totalImpostos - labVal)
-    const aReceber    = Math.round((baseRateio - marcoValor - outrosTotal) * 100) / 100
-    const liquido     = Math.round((aReceber + totalRecebidos - totalDespResp - parcDespGerais) * 100) / 100
-    return { totalImpostos, baseRateio, aReceber, liquido }
-  }
-
-  function updateOutroRateio(dId: string, valor: string) {
-    setOutrosRateio(prev => prev.map(o => o.dentistaId === dId ? { ...o, valor } : o))
-  }
-
-  async function confirmarFechamento() {
-    if (!configRateio || !dentistaNome) return
-    setFechandoMes(true)
-    setErroFechamento(null)
-
-    const labVal    = parseFloat(labTotal) || 0
-    const ultimoDia = toISO(ano, mes, new Date(ano, mes + 1, 0).getDate())
-    const mesLabel  = `${MESES[mes]}/${ano}`
-    const inserts: object[] = []
-
-    let totalImpostos = 0
-
-    if (participaRateio) {
-      const calc = calcFechamento(labVal, participaRateioModal)
-      totalImpostos = calc.totalImpostos
-
-      if (calc.totalComissao > 0 && configRateio.marco_dentista_id && configRateio.marco_dentista_id !== dentistaId) {
-        inserts.push({
-          data: ultimoDia, tipo: 'despesa',
-          descricao: `Comissão Marco Bianchini – ${mesLabel}`,
-          valor: calc.totalComissao, forma: 'Rateio',
-          dentista_id: dentistaId, nota_fiscal: false,
-        })
-        inserts.push({
-          data: ultimoDia, tipo: 'receita',
-          descricao: `Comissão de ${dentistaNome} – ${mesLabel}`,
-          valor: calc.totalComissao, forma: 'Rateio',
-          dentista_id: configRateio.marco_dentista_id, nota_fiscal: false,
-        })
-      }
-    } else {
-      const marcoValor  = parseFloat(marcoValorRateio) || 0
-      const outrosLista = outrosRateio
-        .map(o => ({ ...o, valorNum: parseFloat(o.valor) || 0 }))
-        .filter(o => o.valorNum > 0)
-      const outrosTotal = Math.round(outrosLista.reduce((s, o) => s + o.valorNum, 0) * 100) / 100
-      const calc = calcFechamentoSemRateio(labVal, marcoValor, outrosTotal)
-      totalImpostos = calc.totalImpostos
-
-      if (marcoValor > 0 && configRateio.marco_dentista_id && configRateio.marco_dentista_id !== dentistaId) {
-        inserts.push({
-          data: ultimoDia, tipo: 'despesa',
-          descricao: `Comissão Marco Bianchini – ${mesLabel}`,
-          valor: marcoValor, forma: 'Rateio',
-          dentista_id: dentistaId, nota_fiscal: false,
-        })
-        inserts.push({
-          data: ultimoDia, tipo: 'receita',
-          descricao: `Comissão de ${dentistaNome} – ${mesLabel}`,
-          valor: marcoValor, forma: 'Rateio',
-          dentista_id: configRateio.marco_dentista_id, nota_fiscal: false,
-        })
-      }
-
-      if (outrosTotal > 0) {
-        inserts.push({
-          data: ultimoDia, tipo: 'despesa',
-          descricao: `Rateio outros dentistas – ${mesLabel}`,
-          valor: outrosTotal, forma: 'Rateio',
-          dentista_id: dentistaId, nota_fiscal: false,
-        })
-        for (const o of outrosLista) {
-          inserts.push({
-            data: ultimoDia, tipo: 'receita',
-            descricao: `Rateio de ${dentistaNome} – ${mesLabel}`,
-            valor: o.valorNum, forma: 'Rateio',
-            dentista_id: o.dentistaId, nota_fiscal: false,
-          })
-        }
-      }
-    }
-
-    if (totalImpostos > 0) {
-      inserts.push({
-        data: ultimoDia, tipo: 'despesa',
-        descricao: `Impostos – ${mesLabel}`,
-        valor: totalImpostos, forma: 'Imposto',
-        dentista_id: dentistaId, nota_fiscal: false,
-      })
-    }
-
-    if (labVal > 0) {
-      inserts.push({
-        data: ultimoDia, tipo: 'despesa',
-        descricao: `Laboratório – ${mesLabel}`,
-        valor: labVal, forma: 'Laboratório',
-        dentista_id: dentistaId, nota_fiscal: false,
-      })
-    }
-
-    if (parcDespGerais > 0) {
-      inserts.push({
-        data: ultimoDia, tipo: 'despesa',
-        descricao: `Despesas Gerais (rateio ${nParticipantesRateio} dentistas) – ${mesLabel}`,
-        valor: parcDespGerais, forma: 'Rateio',
-        dentista_id: dentistaId, nota_fiscal: false,
-      })
-    }
-
-    if (inserts.length > 0) {
-      const { error } = await supabase.from('lancamentos').insert(inserts)
-      if (error) { setErroFechamento(error.message); setFechandoMes(false); return }
-    }
-
-    if (usaNovoFormato) {
-      const calc = calcFechamento(labVal, participaRateioModal)
-      const aPagar      = Math.round((calc.totalComissao + parcDespGerais + totalDespResp) * 100) / 100
-      const aReceberNovo = Math.round((comissaoAReceberGerada + participacaoCirurgia) * 100) / 100
-      const totalClinica = Math.round((aPagar - aReceberNovo) * 100) / 100
-      // Split 60% PF / 40% PJ só para dentistas configurados com conta "ambos";
-      // os demais recebem o valor integral na conta configurada (pessoal → PF, empresa → PJ).
-      const valorPFCalc = totalClinica <= 0 ? 0
-        : mostraSplitPFPJ ? Math.round(totalClinica * 0.6 * 100) / 100
-        : tipoConta === 'empresa' ? 0 : totalClinica
-      const valorPJCalc = totalClinica <= 0 ? 0
-        : mostraSplitPFPJ ? Math.round((totalClinica - valorPFCalc) * 100) / 100
-        : tipoConta === 'empresa' ? totalClinica : 0
-
-      // Admin/gestor podem sobrescrever o valor final (juros de cartão, adiantamentos, etc.)
-      const valorPFFinal = totalClinica > 0 && valorPFOverride !== '' ? (parseFloat(valorPFOverride) || 0) : valorPFCalc
-      const valorPJFinal = totalClinica > 0 && valorPJOverride !== '' ? (parseFloat(valorPJOverride) || 0) : valorPJCalc
-      const totalClinicaFinal = totalClinica > 0 ? Math.round((valorPFFinal + valorPJFinal) * 100) / 100 : totalClinica
-
-      const { error: errFechamento } = await supabase.from('fechamentos_mensais').upsert({
-        dentista_id: dentistaId, ano, mes, status: 'fechado',
-        comissao_pagar: calc.totalComissao,
-        rateio_despesas_gerais: parcDespGerais,
-        despesas_atribuidas: totalDespResp,
-        comissao_a_receber: comissaoAReceberGerada,
-        participacao_cirurgia: participacaoCirurgia,
-        total_a_pagar_clinica: totalClinicaFinal,
-        valor_pf: valorPFFinal,
-        valor_pj: valorPJFinal,
-        fechado_em: new Date().toISOString(),
-        fechado_por: session?.username ?? null,
-        reaberto_em: null,
-        reaberto_por: null,
-      }, { onConflict: 'dentista_id,ano,mes' })
-      if (errFechamento) { setErroFechamento(errFechamento.message); setFechandoMes(false); return }
-    }
-
-    setFechandoMes(false)
-    setModalFecharMes(false)
-    setLabTotal('')
-    setValorPFOverride('')
-    setValorPJOverride('')
-    setMarcoValorRateio('')
-    setOutrosRateio([])
-    setRefreshKey(k => k + 1)
-  }
-
-  async function reabrirMes() {
-    if (!fechamento) return
-    setReabrindoMes(true)
-    const { error } = await supabase.from('fechamentos_mensais')
-      .update({ status: 'reaberto', reaberto_em: new Date().toISOString(), reaberto_por: session?.username ?? null })
-      .eq('id', fechamento.id)
-    if (!error) { setRefreshKey(k => k + 1); setConfirmandoReabrir(false) }
-    setReabrindoMes(false)
-  }
-
   const totalPago       = pagamentos.reduce((s, p) => s + p.valor, 0)
   const receitas        = lancamentos.filter(l => l.tipo === 'receita')
   const despesas        = lancamentos.filter(l => l.tipo === 'despesa')
@@ -588,18 +258,6 @@ export default function DentistaFinanceiroPage() {
   const totalRecebidos  = repassesRecebidos.reduce((s, r) => s + r.valor, 0)
   const totalDespResp   = despesasResponsavel.reduce((s, l) => s + l.valor, 0)
   const saldoLiquido    = totalRec + totalRecebidos - totalDesp - totalRepasses - totalDespResp
-
-  // Novo formato de fechamento: dentistas que participam do rateio, exceto o próprio Marco Bianchini
-  const isMarco         = !!configRateio?.marco_dentista_id && configRateio.marco_dentista_id === dentistaId
-  const usaNovoFormato  = participaRateio && !isMarco
-  const mostraSplitPFPJ = usaNovoFormato && tipoConta === 'ambos'
-  const comissaoAReceberGerada = receitas.filter(l => l.forma === 'Rateio').reduce((s, l) => s + l.valor, 0)
-  const participacaoCirurgia   = totalRecebidos
-
-  // Cadeado
-  const mesFechadoAtivo = periodo === 'mes' && mesEstaFechado(fechamento)
-  const podeReabrir     = session?.role === 'admin'
-  const bloqueadoEdicao = mesFechadoAtivo && !podeReabrir
 
   const porForma = FORMAS.map(forma => {
     const movs = receitas.filter(l => l.forma === forma)
@@ -624,12 +282,6 @@ export default function DentistaFinanceiroPage() {
   })
 
   const titulo = periodo === 'mes' ? `${MESES[mes]} ${ano}` : String(ano)
-
-  // Preview estimado de comissão (sem laboratório — laboratório é informado no fechamento)
-  const receitasEstBase = usaNovoFormato ? receitas.filter(l => l.forma !== 'Rateio') : receitas
-  const totalRecEstBase = receitasEstBase.reduce((s, l) => s + l.valor, 0)
-  const estImpostos      = receitasEstBase.reduce((s, l) => s + l.valor * (impostosConfig[l.forma] ?? 0) / 100, 0)
-  const estComissaoMarco = participaRateio && !isMarco ? Math.max(0, totalRecEstBase - estImpostos) * COMISSAO_MARCO_PCT / 100 : 0
 
   return (
     <div>
@@ -664,33 +316,6 @@ export default function DentistaFinanceiroPage() {
           </button>
         </div>
         <div className="flex items-center gap-2">
-          {podeEditar && periodo === 'mes' && !mesFechadoAtivo && (
-            <button onClick={abrirFecharMes}
-              className="btn-secondary px-3 py-1.5 text-xs flex items-center gap-1.5">
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
-              Fechar Mês
-            </button>
-          )}
-          {podeReabrir && mesFechadoAtivo && (
-            confirmandoReabrir ? (
-              <div className="flex items-center gap-1">
-                <button onClick={reabrirMes} disabled={reabrindoMes}
-                  className="text-xs px-2 py-1.5 rounded font-medium"
-                  style={{ backgroundColor: 'rgb(239 68 68 / 0.15)', color: 'rgb(248 113 113)', border: '1px solid rgb(239 68 68 / 0.3)' }}>
-                  {reabrindoMes ? 'Reabrindo...' : 'Confirmar reabertura'}
-                </button>
-                <button onClick={() => setConfirmandoReabrir(false)} className="nav-icon hover:text-[var(--text-1)] transition-colors">
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
-                </button>
-              </div>
-            ) : (
-              <button onClick={() => setConfirmandoReabrir(true)}
-                className="btn-secondary px-3 py-1.5 text-xs flex items-center gap-1.5">
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 9.9-1"/></svg>
-                Reabrir Mês
-              </button>
-            )
-          )}
           <div className="flex gap-1 rounded-lg p-1 border border-[var(--border)]" style={{ backgroundColor: 'var(--surface-muted)' }}>
             {(['mes', 'ano'] as Periodo[]).map(p => (
               <button key={p} onClick={() => setPeriodo(p)}
@@ -701,40 +326,6 @@ export default function DentistaFinanceiroPage() {
           </div>
         </div>
       </div>
-
-      {mesFechadoAtivo && fechamento && (
-        <div className="mb-6 rounded-xl p-4" style={{ backgroundColor: 'var(--surface-muted)', border: '1px solid var(--border)' }}>
-          <div className="flex items-center gap-2 mb-3">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ color: 'var(--text-2)', flexShrink: 0 }}>
-              <rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>
-            </svg>
-            <span className="text-xs font-medium" style={{ color: 'var(--text-1)' }}>
-              Mês fechado em {new Date(fechamento.fechado_em).toLocaleDateString('pt-BR')}
-              {fechamento.fechado_por ? ` por ${fechamento.fechado_por}` : ''} — edição bloqueada{podeReabrir ? '' : ' (só admin pode reabrir)'}.
-            </span>
-          </div>
-          <div className={`grid grid-cols-2 ${fechamento.valor_pf > 0 && fechamento.valor_pj > 0 ? 'sm:grid-cols-3' : 'sm:grid-cols-2'} gap-3 text-xs`}>
-            <div className="flex justify-between sm:block">
-              <span style={{ color: 'var(--text-3)' }}>Total a pagar à clínica</span>
-              <span className={`sm:block font-semibold ${fechamento.total_a_pagar_clinica >= 0 ? 'text-despesa' : 'text-receita'}`}>
-                R$ {fmt(Math.abs(fechamento.total_a_pagar_clinica))}
-              </span>
-            </div>
-            {fechamento.valor_pf > 0 && fechamento.valor_pj > 0 ? (
-              <>
-                <div className="flex justify-between sm:block">
-                  <span style={{ color: 'var(--text-3)' }}>Conta PF (60%)</span>
-                  <span className="sm:block font-semibold" style={{ color: 'var(--text-1)' }}>R$ {fmt(fechamento.valor_pf)}</span>
-                </div>
-                <div className="flex justify-between sm:block">
-                  <span style={{ color: 'var(--text-3)' }}>Conta PJ (40%)</span>
-                  <span className="sm:block font-semibold" style={{ color: 'var(--text-1)' }}>R$ {fmt(fechamento.valor_pj)}</span>
-                </div>
-              </>
-            ) : null}
-          </div>
-        </div>
-      )}
 
       {loading ? <p className="page-subtitle">Carregando...</p> : (
         <>
@@ -765,24 +356,6 @@ export default function DentistaFinanceiroPage() {
               <p className="card-sub">{lancamentos.length} lançamento(s)</p>
             </div>
           </div>
-
-          {/* ── Preview comissão Marco (só mensal, só se comissão configurada) ── */}
-          {periodo === 'mes' && usaNovoFormato && totalRecEstBase > 0 && (
-            <div className="mb-6 rounded-xl px-4 py-3 flex items-center justify-between"
-              style={{ backgroundColor: 'var(--surface-muted)', border: '1px solid var(--border)' }}>
-              <div className="flex items-center gap-2">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" style={{ color: 'var(--text-3)', flexShrink: 0 }}>
-                  <circle cx="12" cy="12" r="10"/><path d="M12 8v4l3 3"/>
-                </svg>
-                <span className="text-xs" style={{ color: 'var(--text-2)' }}>
-                  Comissão estimada Marco Bianchini ({COMISSAO_MARCO_PCT}%) — sem laboratório
-                </span>
-              </div>
-              <span className="text-sm font-semibold text-despesa ml-4 flex-shrink-0">
-                R$ {fmt(estComissaoMarco)}
-              </span>
-            </div>
-          )}
 
           {/* ── Visão anual: cards por mês ── */}
           {periodo === 'ano' ? (
@@ -922,7 +495,7 @@ export default function DentistaFinanceiroPage() {
                           <div className="flex items-center gap-3">
                             {r  > 0 && <span className="text-xs text-receita">+R$ {fmt(r)}</span>}
                             {dp > 0 && <span className="text-xs text-despesa">-R$ {fmt(dp)}</span>}
-                            {!soLeitura && !bloqueadoEdicao && (confirmarLimparData !== data ? (
+                            {!soLeitura && (confirmarLimparData !== data ? (
                               <button
                                 onClick={() => { setConfirmarLimparData(data); setConfirmandoId(null) }}
                                 className="nav-icon hover:text-red-400 transition-colors"
@@ -983,7 +556,7 @@ export default function DentistaFinanceiroPage() {
                                   <p className={`text-sm font-medium flex-shrink-0 ${l.tipo === 'receita' ? 'text-receita' : 'text-despesa'}`}>
                                     {l.tipo === 'receita' ? '+' : '-'} R$ {fmt(l.valor)}
                                   </p>
-                                  {!soLeitura && !bloqueadoEdicao && !confirmando && (
+                                  {!soLeitura && !confirmando && (
                                     <button
                                       onClick={e => { e.stopPropagation(); setConfirmandoId(l.id) }}
                                       className="nav-icon hover:text-red-400 transition-colors flex-shrink-0"
@@ -1034,7 +607,7 @@ export default function DentistaFinanceiroPage() {
                                               </span>
                                               <div className="flex items-center gap-2">
                                                 <span className="text-xs font-medium text-despesa">-R$ {fmt(rp.valor)}</span>
-                                                {podeEditar && !bloqueadoEdicao && (
+                                                {podeEditar && (
                                                   <button onClick={() => removerRepasse(l.id, rp.id)}
                                                     className="nav-icon hover:text-red-400 transition-colors">
                                                     <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
@@ -1047,7 +620,7 @@ export default function DentistaFinanceiroPage() {
                                       </div>
                                     )}
 
-                                    {podeEditar && !bloqueadoEdicao && (
+                                    {podeEditar && (
                                       formRepasse?.lancId === l.id ? (
                                         <div className="flex flex-wrap gap-2 items-center">
                                           <div className="flex items-center gap-1.5">
@@ -1124,7 +697,7 @@ export default function DentistaFinanceiroPage() {
               <h2 className="widget-title">Pagamentos</h2>
               <p className="card-sub">Acerto de comissões e repasses</p>
             </div>
-            {!soLeitura && !bloqueadoEdicao && (
+            {!soLeitura && (
               <button onClick={() => { setFormPag({ valor: '', forma: 'Pix', descricao: '', data: new Date().toISOString().slice(0, 10) }); setModalPagamento(true) }}
                 className="btn-primary px-3 py-1.5 text-xs">
                 + Novo Pagamento
@@ -1165,7 +738,7 @@ export default function DentistaFinanceiroPage() {
                       <p className="mov-meta">{d}/{m}/{a} · {p.forma}</p>
                     </div>
                     <p className="text-sm font-medium text-despesa flex-shrink-0">R$ {fmt(p.valor)}</p>
-                    {!soLeitura && !bloqueadoEdicao && (!confirmando ? (
+                    {!soLeitura && (!confirmando ? (
                       <button onClick={() => setConfirmandoPagId(p.id)}
                         className="nav-icon hover:text-red-400 transition-colors flex-shrink-0">
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -1245,7 +818,7 @@ export default function DentistaFinanceiroPage() {
       </div>
 
       {/* ── Consultas Celos ── */}
-      {!soLeitura && !bloqueadoEdicao && (
+      {!soLeitura && (
         <div className="mt-8">
           <ImportarCelos
             dentistaId={dentistaId}
@@ -1256,355 +829,6 @@ export default function DentistaFinanceiroPage() {
           />
         </div>
       )}
-
-      {/* ── Modal: Fechar Mês ── */}
-      {modalFecharMes && (() => {
-        const labVal = parseFloat(labTotal) || 0
-
-        const marcoValorNum = parseFloat(marcoValorRateio) || 0
-        const outrosParsed  = outrosRateio.map(o => ({ ...o, valorNum: parseFloat(o.valor) || 0 }))
-        const outrosTotal   = Math.round(outrosParsed.reduce((s, o) => s + o.valorNum, 0) * 100) / 100
-
-        const calcOld = participaRateio ? calcFechamento(labVal, participaRateioModal) : null
-        const calcNovo = !participaRateio ? calcFechamentoSemRateio(labVal, marcoValorNum, outrosTotal) : null
-
-        const totalImpostos = participaRateio ? calcOld!.totalImpostos : calcNovo!.totalImpostos
-        const aReceber       = participaRateio ? calcOld!.aReceber : calcNovo!.aReceber
-        const liquido         = participaRateio ? calcOld!.liquido : calcNovo!.liquido
-
-        const semNada = participaRateio
-          ? (totalImpostos === 0 && calcOld!.totalComissao === 0 && labVal === 0 && parcDespGerais === 0)
-          : (totalImpostos === 0 && marcoValorNum === 0 && outrosTotal === 0 && labVal === 0 && parcDespGerais === 0)
-
-        const marcoConfigOk = !!configRateio?.marco_dentista_id && configRateio?.marco_dentista_id !== dentistaId
-
-        // Novo formato (rateio, exceto Marco): A pagar / A receber / Total a pagar para a clínica, 60% PF / 40% PJ
-        const aPagarNovo    = usaNovoFormato && calcOld ? Math.round((calcOld.totalComissao + parcDespGerais + totalDespResp) * 100) / 100 : 0
-        const aReceberNovo  = usaNovoFormato ? Math.round((comissaoAReceberGerada + participacaoCirurgia) * 100) / 100 : 0
-        const totalClinica  = Math.round((aPagarNovo - aReceberNovo) * 100) / 100
-        const valorPFPrev   = totalClinica <= 0 ? 0
-          : mostraSplitPFPJ ? Math.round(totalClinica * 0.6 * 100) / 100
-          : tipoConta === 'empresa' ? 0 : totalClinica
-        const valorPJPrev   = totalClinica <= 0 ? 0
-          : mostraSplitPFPJ ? Math.round((totalClinica - valorPFPrev) * 100) / 100
-          : tipoConta === 'empresa' ? totalClinica : 0
-        // Admin/gestor podem ajustar o valor final (juros de cartão, adiantamentos etc.)
-        const valorPFFinal  = totalClinica > 0 && valorPFOverride !== '' ? (parseFloat(valorPFOverride) || 0) : valorPFPrev
-        const valorPJFinal  = totalClinica > 0 && valorPJOverride !== '' ? (parseFloat(valorPJOverride) || 0) : valorPJPrev
-        const totalClinicaFinal = totalClinica > 0 ? Math.round((valorPFFinal + valorPJFinal) * 100) / 100 : totalClinica
-        const ajustado      = totalClinica > 0 && (valorPFOverride !== '' || valorPJOverride !== '')
-
-        return (
-          <div className="modal-overlay">
-            <div className="modal" style={{ maxWidth: '34rem' }}>
-              <div className="modal-header">
-                <h3 className="modal-title">
-                  Fechar Mês — {dentistaNome} — {MESES[mes]}/{ano}
-                </h3>
-                <button onClick={() => setModalFecharMes(false)} className="nav-icon hover:text-red-400 transition-colors">
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
-                </button>
-              </div>
-
-              {/* Inputs */}
-              <div className={`grid ${participaRateio ? 'grid-cols-2' : 'grid-cols-1'} gap-3 mb-4`}>
-                <div>
-                  <label className="form-label">Laboratório total do mês (R$)</label>
-                  <input
-                    type="number" min="0" step="0.01" placeholder="0,00"
-                    value={labTotal}
-                    onChange={e => setLabTotal(e.target.value)}
-                    className="form-input"
-                  />
-                </div>
-                {participaRateio && (
-                  <div>
-                    <label className="form-label">Rateio (comissão 13% Marco)</label>
-                    <div className="flex gap-2 mt-1">
-                      {([true, false] as const).map(v => (
-                        <button key={String(v)}
-                          onClick={() => setParticipaRateioModal(v)}
-                          className={`flex-1 py-2 text-xs rounded-lg border transition-colors ${participaRateioModal === v
-                            ? (v
-                              ? 'bg-emerald-950/40 border-emerald-800/60 text-emerald-400 font-medium'
-                              : 'bg-[var(--surface-muted)] border-[var(--border-hover)] text-[var(--text-2)] font-medium')
-                            : 'border-[var(--border)] text-[var(--text-3)]'}`}>
-                          {v ? 'Sim' : 'Não'}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                )}
-              </div>
-
-              {!participaRateio && (
-                <div className="mb-4 rounded-lg px-3 py-2 text-xs flex items-center gap-2"
-                  style={{ backgroundColor: 'var(--surface-muted)', border: '1px solid var(--border)', color: 'var(--text-2)' }}>
-                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" style={{ flexShrink: 0 }}>
-                    <circle cx="12" cy="12" r="10"/><path d="M12 8v4l3 3"/>
-                  </svg>
-                  Sem rateio — a clínica retém o faturamento e paga Marco Bianchini e os dentistas do rateio abaixo. Ajuste os valores livremente.
-                </div>
-              )}
-
-              {/* Cálculo */}
-              <div className="rounded-xl p-4 mb-4 flex flex-col gap-2" style={{ backgroundColor: 'var(--surface-muted)' }}>
-                <p className="text-xs font-semibold uppercase tracking-widest mb-1" style={{ color: 'var(--text-3)' }}>
-                  Faturamento do período
-                </p>
-                <div className="flex justify-between text-xs">
-                  <span style={{ color: 'var(--text-2)' }}>
-                    Faturamento bruto ({usaNovoFormato && calcOld ? calcOld.receitasCount : receitas.length} lançamento(s))
-                    {usaNovoFormato ? ' — consultas' : ''}
-                  </span>
-                  <span className="text-receita font-medium">
-                    R$ {fmt(usaNovoFormato && calcOld ? calcOld.totalRecBase : totalRec)}
-                  </span>
-                </div>
-                <div className="flex justify-between text-xs">
-                  <span style={{ color: 'var(--text-2)' }}>Impostos (por forma de pagamento)</span>
-                  <span className="text-despesa">− R$ {fmt(totalImpostos)}</span>
-                </div>
-                {labVal > 0 && (
-                  <div className="flex justify-between text-xs">
-                    <span style={{ color: 'var(--text-2)' }}>Laboratório</span>
-                    <span className="text-despesa">− R$ {fmt(labVal)}</span>
-                  </div>
-                )}
-
-                {participaRateio && participaRateioModal && calcOld && (
-                  <>
-                    <div className="flex justify-between text-xs" style={{ borderTop: '1px dashed var(--border)', paddingTop: '6px', marginTop: '2px' }}>
-                      <span style={{ color: 'var(--text-3)' }}>Base da comissão</span>
-                      <span style={{ color: 'var(--text-2)' }}>R$ {fmt(calcOld.baseComissao)}</span>
-                    </div>
-                    <div className="flex justify-between text-xs">
-                      <span style={{ color: 'var(--text-2)' }}>Comissão Marco Bianchini ({COMISSAO_MARCO_PCT}%)</span>
-                      <span className="text-despesa">− R$ {fmt(calcOld.totalComissao)}</span>
-                    </div>
-                  </>
-                )}
-
-                {!participaRateio && calcNovo && (
-                  <>
-                    <div className="flex justify-between text-xs" style={{ borderTop: '1px dashed var(--border)', paddingTop: '6px', marginTop: '2px' }}>
-                      <span style={{ color: 'var(--text-3)' }}>Base do rateio</span>
-                      <span style={{ color: 'var(--text-2)' }}>R$ {fmt(calcNovo.baseRateio)}</span>
-                    </div>
-                    <div className="flex justify-between items-center gap-2 text-xs">
-                      <span style={{ color: 'var(--text-2)' }}>Comissão Marco Bianchini</span>
-                      <div className="flex items-center gap-1 flex-shrink-0">
-                        <span style={{ color: 'var(--text-3)' }}>R$</span>
-                        <input type="number" min="0" step="0.01" placeholder="0,00"
-                          value={marcoValorRateio}
-                          onChange={e => setMarcoValorRateio(e.target.value)}
-                          className="form-input text-right" style={{ width: '6.5rem' }} />
-                      </div>
-                    </div>
-
-                    {outrosRateio.length > 0 ? (
-                      <div className="flex flex-col gap-1.5 mt-0.5">
-                        <span className="text-xs" style={{ color: 'var(--text-2)' }}>Rateio — outros dentistas</span>
-                        {outrosRateio.map(o => (
-                          <div key={o.dentistaId} className="flex justify-between items-center gap-2 pl-3 text-xs">
-                            <span className="truncate" style={{ color: 'var(--text-3)' }}>↳ {o.nome}</span>
-                            <div className="flex items-center gap-1 flex-shrink-0">
-                              <span style={{ color: 'var(--text-3)' }}>R$</span>
-                              <input type="number" min="0" step="0.01" placeholder="0,00"
-                                value={o.valor}
-                                onChange={e => updateOutroRateio(o.dentistaId, e.target.value)}
-                                className="form-input text-right" style={{ width: '6.5rem' }} />
-                            </div>
-                          </div>
-                        ))}
-                        <div className="flex justify-between text-xs pl-3">
-                          <span style={{ color: 'var(--text-3)' }}>Total outros</span>
-                          <span className="text-despesa">− R$ {fmt(outrosTotal)}</span>
-                        </div>
-                      </div>
-                    ) : (
-                      <p className="text-xs" style={{ color: 'var(--text-3)' }}>
-                        Nenhum dentista selecionado em Configurações → Rateio para dividir os &quot;outros&quot;.
-                      </p>
-                    )}
-                  </>
-                )}
-
-                <div className="flex justify-between text-sm font-semibold pt-2" style={{ borderTop: '1px solid var(--border)' }}>
-                  <span style={{ color: 'var(--text-1)' }}>A receber (dentista)</span>
-                  <span className={aReceber >= 0 ? 'text-receita' : 'text-despesa'}>R$ {fmt(aReceber)}</span>
-                </div>
-              </div>
-
-              {/* Fechamento — sem rateio (inclui o próprio Marco): Total entradas / saídas / comissões a pagar / Total a pagar */}
-              {!usaNovoFormato && (
-                <div className="rounded-xl p-4 mb-4 flex flex-col gap-2" style={{ border: '1px solid var(--border)' }}>
-                  <p className="text-xs font-semibold uppercase tracking-widest mb-1" style={{ color: 'var(--text-3)' }}>
-                    Fechamento de mês
-                  </p>
-                  <div className="flex justify-between text-xs">
-                    <span style={{ color: 'var(--text-2)' }}>Total entradas</span>
-                    <span className="text-receita">R$ {fmt(totalRec)}</span>
-                  </div>
-                  <div className="flex justify-between text-xs">
-                    <span style={{ color: 'var(--text-2)' }}>Total saídas</span>
-                    <span className="text-despesa">R$ {fmt(totalImpostos + labVal)}</span>
-                  </div>
-                  <div className="flex justify-between text-xs pt-1" style={{ borderTop: '1px dashed var(--border)' }}>
-                    <span style={{ color: 'var(--text-2)' }}>Total comissões a pagar</span>
-                    <span className={aReceber >= 0 ? 'text-receita' : 'text-despesa'}>R$ {fmt(aReceber)}</span>
-                  </div>
-
-                  {(totalRecebidos > 0 || totalDespResp > 0 || parcDespGerais > 0) && (
-                    <div className="flex flex-col gap-1.5 pl-3 mt-0.5">
-                      {totalRecebidos > 0 && (
-                        <div className="flex justify-between text-xs">
-                          <span style={{ color: 'var(--text-3)' }}>↳ Repasses / Participações recebidas</span>
-                          <span className="text-receita">+ R$ {fmt(totalRecebidos)}</span>
-                        </div>
-                      )}
-                      {totalDespResp > 0 && (
-                        <div className="flex justify-between text-xs">
-                          <span style={{ color: 'var(--text-3)' }}>↳ Despesas atribuídas</span>
-                          <span className="text-despesa">− R$ {fmt(totalDespResp)}</span>
-                        </div>
-                      )}
-                      {parcDespGerais > 0 && (
-                        <div className="flex justify-between text-xs">
-                          <span style={{ color: 'var(--text-3)' }}>
-                            ↳ Despesas gerais — parcela (R$ {fmt(despGeraisMes)} ÷ {nParticipantesRateio})
-                          </span>
-                          <span className="text-despesa">− R$ {fmt(parcDespGerais)}</span>
-                        </div>
-                      )}
-                    </div>
-                  )}
-
-                  <div className="flex justify-between text-sm font-semibold pt-2" style={{ borderTop: '1px solid var(--border)' }}>
-                    <span style={{ color: 'var(--text-1)' }}>Total a pagar</span>
-                    <span className={liquido >= 0 ? 'text-receita' : 'text-despesa'}>R$ {fmt(liquido)}</span>
-                  </div>
-                </div>
-              )}
-
-              {/* Fechamento — dentistas do rateio (exceto Marco): Total entradas / saídas / comissões / Total a pagar (com ou sem split PF/PJ) */}
-              {usaNovoFormato && calcOld && (
-                <div className="rounded-xl p-4 mb-4 flex flex-col gap-2" style={{ border: '1px solid var(--border)' }}>
-                  <p className="text-xs font-semibold uppercase tracking-widest mb-1" style={{ color: 'var(--text-3)' }}>
-                    Fechamento de mês
-                  </p>
-                  <div className="flex justify-between text-xs">
-                    <span style={{ color: 'var(--text-2)' }}>Total entradas</span>
-                    <span className="text-receita">R$ {fmt(totalRec)}</span>
-                  </div>
-                  <div className="flex justify-between text-xs">
-                    <span style={{ color: 'var(--text-2)' }}>Total saídas</span>
-                    <span className="text-despesa">R$ {fmt(totalDespResp)}</span>
-                  </div>
-                  <div className="flex justify-between text-xs pt-1" style={{ borderTop: '1px dashed var(--border)' }}>
-                    <span style={{ color: 'var(--text-2)' }}>Total comissões a receber</span>
-                    <span className="text-receita">R$ {fmt(aReceberNovo)}</span>
-                  </div>
-                  <div className="flex justify-between text-xs">
-                    <span style={{ color: 'var(--text-2)' }}>
-                      Despesas Gerais (Rateio) {nParticipantesRateio > 0 ? `(R$ ${fmt(despGeraisMes)} ÷ ${nParticipantesRateio})` : ''}
-                    </span>
-                    <span className="text-despesa">R$ {fmt(parcDespGerais)}</span>
-                  </div>
-                  <div className="flex justify-between text-xs">
-                    <span style={{ color: 'var(--text-2)' }}>Total comissões a pagar ({COMISSAO_MARCO_PCT}% Marco Bianchini)</span>
-                    <span className="text-despesa">R$ {fmt(calcOld.totalComissao)}</span>
-                  </div>
-
-                  <div className="flex justify-between text-sm font-semibold pt-2" style={{ borderTop: '1px solid var(--border)' }}>
-                    <span style={{ color: 'var(--text-1)' }}>
-                      {totalClinica >= 0 ? 'Total a pagar' : 'Clínica paga ao dentista'}
-                      {ajustado && <span className="text-xs font-normal ml-1" style={{ color: 'var(--text-3)' }}>(ajustado)</span>}
-                    </span>
-                    <span className={totalClinica >= 0 ? 'text-despesa' : 'text-receita'}>
-                      R$ {fmt(Math.abs(totalClinica >= 0 ? totalClinicaFinal : totalClinica))}
-                    </span>
-                  </div>
-
-                  {totalClinica > 0 && mostraSplitPFPJ && (
-                    <div className="flex flex-col gap-1.5 pl-3">
-                      <p className="text-xs" style={{ color: 'var(--text-3)' }}>
-                        Ajuste manualmente se houver juros de cartão a descontar, adiantamentos a somar etc.
-                      </p>
-                      <div className="flex justify-between items-center gap-2 text-xs">
-                        <span style={{ color: 'var(--text-3)' }}>↳ Total a pagar PF (60%)</span>
-                        <div className="flex items-center gap-1 flex-shrink-0">
-                          <span style={{ color: 'var(--text-3)' }}>R$</span>
-                          <input type="number" step="0.01" placeholder={fmt(valorPFPrev)}
-                            value={valorPFOverride}
-                            onChange={e => setValorPFOverride(e.target.value)}
-                            className="form-input text-right" style={{ width: '6.5rem' }} />
-                        </div>
-                      </div>
-                      <div className="flex justify-between items-center gap-2 text-xs">
-                        <span style={{ color: 'var(--text-3)' }}>↳ Total a pagar PJ (40%)</span>
-                        <div className="flex items-center gap-1 flex-shrink-0">
-                          <span style={{ color: 'var(--text-3)' }}>R$</span>
-                          <input type="number" step="0.01" placeholder={fmt(valorPJPrev)}
-                            value={valorPJOverride}
-                            onChange={e => setValorPJOverride(e.target.value)}
-                            className="form-input text-right" style={{ width: '6.5rem' }} />
-                        </div>
-                      </div>
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {/* O que será registrado */}
-              <div className="rounded-xl p-3 mb-4" style={{ backgroundColor: 'var(--accent-soft)', border: '1px solid rgba(16,185,129,0.2)' }}>
-                <p className="text-xs font-semibold mb-1.5" style={{ color: 'var(--accent)' }}>O que será registrado:</p>
-                <div className="flex flex-col gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
-                  {totalImpostos > 0 && <p>• Impostos: R$ {fmt(totalImpostos)} (despesa na sua conta)</p>}
-                  {labVal > 0 && <p>• Laboratório: R$ {fmt(labVal)} (despesa na sua conta)</p>}
-
-                  {participaRateio && calcOld && calcOld.totalComissao > 0 && marcoConfigOk && (
-                    <p>• Comissão Marco: R$ {fmt(calcOld.totalComissao)} — deduzida aqui e creditada para Marco</p>
-                  )}
-                  {participaRateio && calcOld && calcOld.totalComissao > 0 && !marcoConfigOk && (
-                    <p className="text-amber-400">Marco Bianchini não configurado em Administração → Configurações.</p>
-                  )}
-
-                  {!participaRateio && marcoValorNum > 0 && marcoConfigOk && (
-                    <p>• Comissão Marco: R$ {fmt(marcoValorNum)} — deduzida aqui e creditada para Marco</p>
-                  )}
-                  {!participaRateio && marcoValorNum > 0 && !marcoConfigOk && (
-                    <p className="text-amber-400">Marco Bianchini não configurado em Administração → Configurações.</p>
-                  )}
-                  {!participaRateio && outrosTotal > 0 && (
-                    <p>• Rateio outros dentistas: R$ {fmt(outrosTotal)} — dividido entre {outrosParsed.filter(o => o.valorNum > 0).length} dentista(s)</p>
-                  )}
-
-                  {parcDespGerais > 0 && (
-                    <p>• Despesas gerais: R$ {fmt(parcDespGerais)} (1/{nParticipantesRateio} de R$ {fmt(despGeraisMes)} em despesas gerais do mês)</p>
-                  )}
-                  {semNada && <p>Nenhum lançamento a gerar.</p>}
-                  {usaNovoFormato && (
-                    <p>🔒 O mês será fechado e travado para edição (só admin poderá reabrir) — total a pagar à clínica: R$ {fmt(Math.abs(totalClinica >= 0 ? totalClinicaFinal : totalClinica))} {totalClinica < 0 ? '(clínica paga ao dentista)' : ajustado ? '(valor ajustado manualmente)' : ''}</p>
-                  )}
-                </div>
-              </div>
-
-              {erroFechamento && <p className="text-xs text-red-400 mb-3">{erroFechamento}</p>}
-
-              <div className="flex gap-2">
-                <button onClick={() => setModalFecharMes(false)} className="btn-secondary flex-1 py-2">Cancelar</button>
-                <button
-                  onClick={confirmarFechamento}
-                  disabled={fechandoMes || semNada}
-                  className="btn-primary flex-1 py-2">
-                  {fechandoMes ? 'Processando...' : 'Confirmar Fechamento'}
-                </button>
-              </div>
-            </div>
-          </div>
-        )
-      })()}
     </div>
   )
 }
