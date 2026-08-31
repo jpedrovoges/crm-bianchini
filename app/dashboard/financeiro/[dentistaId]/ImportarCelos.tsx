@@ -2,8 +2,14 @@
 
 import { useState, useEffect, useRef } from 'react'
 import { supabase } from '@/lib/supabase'
+import { IMPOSTO_NF_PCT } from '@/lib/financeiro'
 
 const MESES = ['Janeiro','Fevereiro','Março','Abril','Maio','Junho','Julho','Agosto','Setembro','Outubro','Novembro','Dezembro']
+
+function hojeISO() {
+  const d = new Date()
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
 
 interface LinhaPreview {
   paciente_nome: string
@@ -40,7 +46,6 @@ export default function ImportarCelos({ dentistaId, dentistaNome, mes, ano, onIm
   const [salvando, setSalvando]       = useState(false)
   const [erro, setErro]               = useState<string | null>(null)
   const [linhas, setLinhas]           = useState<LinhaPreview[]>([])
-  const [pctImpostos, setPctImpostos] = useState('0')
   const [pctDesconto, setPctDesconto] = useState('0')
   const [marcoId, setMarcoId]         = useState<string | null>(null)
   const [marcoNome, setMarcoNome]     = useState<string | null>(null)
@@ -58,16 +63,15 @@ export default function ImportarCelos({ dentistaId, dentistaNome, mes, ano, onIm
       })
   }, [])
 
-  const impostos = parseFloat(pctImpostos) || 0
   const desconto = parseFloat(pctDesconto) || 0
 
   function calcLiquido(bruto: number) {
-    const aposImposto = bruto * (1 - impostos / 100)
+    const aposImposto = bruto * (1 - IMPOSTO_NF_PCT / 100)
     return aposImposto * (1 - desconto / 100)
   }
 
   function calcDescontoValor(bruto: number) {
-    const aposImposto = bruto * (1 - impostos / 100)
+    const aposImposto = bruto * (1 - IMPOSTO_NF_PCT / 100)
     return aposImposto * (desconto / 100)
   }
 
@@ -128,7 +132,9 @@ export default function ImportarCelos({ dentistaId, dentistaNome, mes, ano, onIm
     if (linhas.length === 0) return
     setSalvando(true); setErro(null)
 
-    const dataFallback = `${ano}-${String(mes + 1).padStart(2,'0')}-28`
+    // Data real da importação (não o período que está sendo visualizado) —
+    // é o dia em que a planilha foi de fato enviada/lançada.
+    const dataImportacao = hojeISO()
 
     // Lançamentos do próprio dentista (valor líquido)
     const insertsD = linhas.map(l => ({
@@ -136,7 +142,7 @@ export default function ImportarCelos({ dentistaId, dentistaNome, mes, ano, onIm
       descricao:   l.paciente_nome,
       valor:       Math.round(calcLiquido(l.valor_bruto) * 100) / 100,
       forma:       'Convênio',
-      data:        dataFallback,
+      data:        dataImportacao,
       dentista_id: dentistaId,
       categoria:   'procedimento',
       observacao:  l.guia ? `Guia ${l.guia}` : null,
@@ -156,7 +162,7 @@ export default function ImportarCelos({ dentistaId, dentistaNome, mes, ano, onIm
         descricao:   `Comissão Celos - ${primeiroNome}`,
         valor:       totalComissao,
         forma:       'Convênio',
-        data:        dataFallback,
+        data:        dataImportacao,
         dentista_id: marcoId,
         categoria:   'procedimento',
         observacao:  null,
@@ -211,13 +217,10 @@ export default function ImportarCelos({ dentistaId, dentistaNome, mes, ano, onIm
             {/* Deduções */}
             <div className="flex gap-4 mb-4 p-3 rounded-lg" style={{ backgroundColor: 'var(--surface-muted)', border: '1px solid var(--border)' }}>
               <div className="flex-1">
-                <label className="text-xs font-medium mb-1.5 block" style={{ color: 'var(--text-3)' }}>Impostos (%)</label>
-                <input
-                  type="number" min="0" max="100" step="0.01"
-                  value={pctImpostos}
-                  onChange={e => setPctImpostos(e.target.value)}
-                  className="input w-full text-sm"
-                />
+                <label className="text-xs font-medium mb-1.5 block" style={{ color: 'var(--text-3)' }}>Imposto NF (fixo)</label>
+                <p className="form-input flex items-center" style={{ color: 'var(--text-2)' }}>
+                  {IMPOSTO_NF_PCT.toFixed(2).replace('.', ',')}%
+                </p>
               </div>
               <div className="flex-1">
                 <label className="text-xs font-medium mb-1.5 block" style={{ color: 'var(--text-3)' }}>Desconto Dentista (%)</label>
@@ -225,7 +228,7 @@ export default function ImportarCelos({ dentistaId, dentistaNome, mes, ano, onIm
                   type="number" min="0" max="100" step="0.01"
                   value={pctDesconto}
                   onChange={e => setPctDesconto(e.target.value)}
-                  className="input w-full text-sm"
+                  className="form-input w-full text-sm"
                 />
               </div>
               <div className="flex flex-col justify-end pb-1 min-w-0">

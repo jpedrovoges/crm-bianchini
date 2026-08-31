@@ -6,6 +6,7 @@ import Link from 'next/link'
 import { supabase } from '@/lib/supabase'
 import ImportarCelos from './ImportarCelos'
 import { useSession } from '@/app/dashboard/SessionProvider'
+import { IMPOSTO_NF_PCT } from '@/lib/financeiro'
 
 const MESES = ['Janeiro','Fevereiro','Março','Abril','Maio','Junho','Julho','Agosto','Setembro','Outubro','Novembro','Dezembro']
 const FORMAS = ['Pix', 'Dinheiro', 'Cartão Crédito', 'Cartão Débito', 'Convênio', 'Rateio', 'Desconto']
@@ -52,7 +53,7 @@ type RepasseRecebido = {
   dentista_origem_id: string
   percentual: number
   valor: number
-  lancamento: { data: string; descricao: string } | null
+  lancamento: { data: string; descricao: string; forma: string } | null
   origem: { nome: string } | null
 }
 
@@ -70,6 +71,35 @@ function fmt(v: number) {
 
 function toISO(ano: number, mes: number, dia: number) {
   return `${ano}-${String(mes + 1).padStart(2, '0')}-${String(dia).padStart(2, '0')}`
+}
+
+function addDias(dataISO: string, dias: number): string {
+  const [ano, mes, dia] = dataISO.split('-').map(Number)
+  const d = new Date(ano, mes - 1, dia + dias)
+  return toISO(d.getFullYear(), d.getMonth(), d.getDate())
+}
+
+function diaSemana(dataISO: string): number {
+  const [ano, mes, dia] = dataISO.split('-').map(Number)
+  return new Date(ano, mes - 1, dia).getDay()
+}
+
+function proximoDiaUtil(dataISO: string): string {
+  let d = addDias(dataISO, 1)
+  while (diaSemana(d) === 0 || diaSemana(d) === 6) d = addDias(d, 1)
+  return d
+}
+
+// Data em que o valor efetivamente cai na conta do dentista: no cartão de
+// crédito a operadora só repassa 30 dias corridos depois, no débito cai no
+// próximo dia útil (pula fim de semana, e vira mês se o dia útil seguinte
+// cair no mês seguinte). As demais formas caem no mesmo dia do lançamento.
+// Usado só nesta página — Movimento Diário e as abas de Nota Fiscal em
+// /financeiro continuam mostrando a data e o valor originais do lançamento.
+function dataEfetiva(l: { data: string; forma: string }): string {
+  if (l.forma === 'Cartão Crédito') return addDias(l.data, 30)
+  if (l.forma === 'Cartão Débito') return proximoDiaUtil(l.data)
+  return l.data
 }
 
 const AVATARES = [
@@ -140,14 +170,24 @@ export default function DentistaFinanceiroPage() {
     setLoading(true)
     const inicio = periodo === 'mes' ? toISO(ano, mes, 1) : `${ano}-01-01`
     const fim    = periodo === 'mes' ? toISO(ano, mes, new Date(ano, mes + 1, 0).getDate()) : `${ano}-12-31`
+    // Busca com folga de 31 dias antes do início: um lançamento em cartão de
+    // crédito feito perto do fim do mês anterior só cai (dataEfetiva) dentro
+    // deste período, então precisa ser buscado mesmo com data fora do range.
+    const inicioBusca = addDias(inicio, -31)
     supabase.from('lancamentos')
       .select('*, pacientes(nome)')
       .eq('dentista_id', dentistaId)
-      .gte('data', inicio).lte('data', fim)
+      .gte('data', inicioBusca).lte('data', fim)
       .order('data', { ascending: false })
       .order('created_at', { ascending: false })
       .then(({ data }) => {
-        if (data) setLancamentos(data as Lancamento[])
+        if (data) {
+          const doPeriodo = (data as Lancamento[]).filter(l => {
+            const ef = dataEfetiva(l)
+            return ef >= inicio && ef <= fim
+          })
+          setLancamentos(doPeriodo)
+        }
         setLoading(false)
       })
   }, [dentistaId, mes, ano, periodo, refreshKey])
@@ -174,13 +214,15 @@ export default function DentistaFinanceiroPage() {
     const fim    = periodo === 'mes' ? toISO(ano, mes, new Date(ano, mes + 1, 0).getDate()) : `${ano}-12-31`
     supabase
       .from('repasses')
-      .select('*, lancamento:lancamentos!lancamento_id(data, descricao), origem:dentistas!dentista_origem_id(nome)')
+      .select('*, lancamento:lancamentos!lancamento_id(data, descricao, forma), origem:dentistas!dentista_origem_id(nome)')
       .eq('dentista_destino_id', dentistaId)
       .then(({ data }) => {
         if (!data) return
-        const filtrado = (data as RepasseRecebido[]).filter(r =>
-          r.lancamento?.data && r.lancamento.data >= inicio && r.lancamento.data <= fim
-        )
+        const filtrado = (data as RepasseRecebido[]).filter(r => {
+          if (!r.lancamento?.data || !r.lancamento?.forma) return false
+          const ef = dataEfetiva(r.lancamento)
+          return ef >= inicio && ef <= fim
+        })
         setRepassesRecebidos(filtrado)
       })
   }, [dentistaId, mes, ano, periodo, refreshKey])
@@ -222,13 +264,21 @@ export default function DentistaFinanceiroPage() {
     setConfirmandoPagId(null)
   }
 
+  // Lançamento "Elo Saúde": a clínica recebe o valor bruto do procedimento,
+  // mas o repasse pro dentista de destino sai já com o imposto de NF (11,33%)
+  // descontado — o restante do valor líquido fica com quem lançou (Marco
+  // Bianchini), que é a comissão da clínica.
+  function baseRepasse(lanc: Pick<Lancamento, 'valor' | 'forma'>) {
+    return lanc.forma === 'Elo Saúde' ? lanc.valor * (1 - IMPOSTO_NF_PCT / 100) : lanc.valor
+  }
+
   async function adicionarRepasse(lancId: string) {
     if (!formRepasse?.percentual || !formRepasse?.destinoId) return
     const lanc = lancamentos.find(l => l.id === lancId)
     if (!lanc) return
     const pct = parseFloat(formRepasse.percentual)
     if (isNaN(pct) || pct <= 0 || pct > 100) return
-    const valor = Math.round((lanc.valor * pct / 100) * 100) / 100
+    const valor = Math.round((baseRepasse(lanc) * pct / 100) * 100) / 100
     setSalvandoRepasse(true)
     const { data, error } = await supabase.from('repasses').insert({
       lancamento_id: lancId,
@@ -265,18 +315,19 @@ export default function DentistaFinanceiroPage() {
   }).filter(f => f.count > 0)
 
   const porData = lancamentos.reduce<Record<string, Lancamento[]>>((acc, l) => {
-    acc[l.data] = acc[l.data] ? [...acc[l.data], l] : [l]; return acc
+    const ef = dataEfetiva(l)
+    acc[ef] = acc[ef] ? [...acc[ef], l] : [l]; return acc
   }, {})
   const datas = Object.keys(porData).sort((a, b) => b.localeCompare(a))
 
   const porMes = Array.from({ length: 12 }, (_, i) => {
     const mesStr = String(i + 1).padStart(2, '0')
-    const movs   = lancamentos.filter(l => l.data.startsWith(`${ano}-${mesStr}`))
+    const movs   = lancamentos.filter(l => dataEfetiva(l).startsWith(`${ano}-${mesStr}`))
     const rec    = movs.filter(l => l.tipo === 'receita').reduce((s, l) => s + l.valor, 0)
     const desp   = movs.filter(l => l.tipo === 'despesa').reduce((s, l) => s + l.valor, 0)
     const rep    = movs.flatMap(l => repasses[l.id] ?? []).reduce((s, r) => s + r.valor, 0)
     const receb  = repassesRecebidos
-      .filter(r => r.lancamento?.data?.startsWith(`${ano}-${mesStr}`))
+      .filter(r => r.lancamento?.data && r.lancamento?.forma && dataEfetiva(r.lancamento).startsWith(`${ano}-${mesStr}`))
       .reduce((s, r) => s + r.valor, 0)
     return { mes: i, rec, desp, rep, receb, saldo: rec + receb - desp - rep }
   })
@@ -438,7 +489,7 @@ export default function DentistaFinanceiroPage() {
                               {r.lancamento?.descricao ?? '—'}
                             </p>
                             <p className="text-xs" style={{ color: 'var(--text-3)' }}>
-                              {r.percentual}% de {r.origem?.nome ?? '?'} · {r.lancamento?.data?.split('-').reverse().join('/') ?? ''}
+                              {r.percentual}% de {r.origem?.nome ?? '?'} · {r.lancamento ? dataEfetiva(r.lancamento).split('-').reverse().join('/') : ''}
                             </p>
                           </div>
                           <span className="text-sm font-medium text-receita ml-3 flex-shrink-0">+R$ {fmt(r.valor)}</span>
@@ -551,6 +602,7 @@ export default function DentistaFinanceiroPage() {
                                       {l.pacientes ? ` · ${l.pacientes.nome}` : ''}
                                       {l.observacao ? ` · ${l.observacao}` : ''}
                                       {l.nota_fiscal ? ` · NF${l.numero_nf ? ` ${l.numero_nf}` : ' a emitir'}` : ''}
+                                      {dataEfetiva(l) !== l.data ? ` · lançado em ${l.data.split('-').reverse().join('/')}` : ''}
                                     </p>
                                   </div>
                                   <p className={`text-sm font-medium flex-shrink-0 ${l.tipo === 'receita' ? 'text-receita' : 'text-despesa'}`}>
@@ -622,42 +674,55 @@ export default function DentistaFinanceiroPage() {
 
                                     {podeEditar && (
                                       formRepasse?.lancId === l.id ? (
-                                        <div className="flex flex-wrap gap-2 items-center">
-                                          <div className="flex items-center gap-1.5">
-                                            <input
-                                              type="number" min="0.1" max="100" step="0.1"
-                                              placeholder="%"
-                                              value={formRepasse.percentual}
-                                              onChange={e => setFormRepasse(prev => prev ? { ...prev, percentual: e.target.value } : null)}
-                                              className="form-input text-center"
-                                              style={{ width: '4.5rem' }}
-                                              autoFocus
-                                            />
-                                            <span className="text-xs" style={{ color: 'var(--text-3)' }}>%</span>
-                                          </div>
-                                          <select
-                                            value={formRepasse.destinoId}
-                                            onChange={e => setFormRepasse(prev => prev ? { ...prev, destinoId: e.target.value } : null)}
-                                            className="form-select flex-1"
-                                            style={{ minWidth: '9rem' }}
-                                          >
-                                            <option value="">Selecionar dentista...</option>
-                                            {listaDentistas.filter(dd => dd.id !== dentistaId).map(dd => (
-                                              <option key={dd.id} value={dd.id}>{dd.nome}</option>
-                                            ))}
-                                          </select>
-                                          <div className="flex gap-1.5">
-                                            <button
-                                              onClick={() => adicionarRepasse(l.id)}
-                                              disabled={!formRepasse.percentual || !formRepasse.destinoId || salvandoRepasse}
-                                              className="btn-primary px-3 py-1.5 text-xs"
+                                        <div className="flex flex-col gap-2">
+                                          {l.forma === 'Elo Saúde' && (
+                                            <p className="text-xs" style={{ color: 'var(--text-3)' }}>
+                                              Imposto de NF ({IMPOSTO_NF_PCT.toFixed(2).replace('.', ',')}%) descontado antes do repasse — base: R$ {fmt(baseRepasse(l))} (bruto R$ {fmt(l.valor)})
+                                            </p>
+                                          )}
+                                          <div className="flex flex-wrap gap-2 items-center">
+                                            <div className="flex items-center gap-1.5">
+                                              <input
+                                                type="number" min="0.1" max="100" step="0.1"
+                                                placeholder="%"
+                                                value={formRepasse.percentual}
+                                                onChange={e => setFormRepasse(prev => prev ? { ...prev, percentual: e.target.value } : null)}
+                                                className="form-input text-center"
+                                                style={{ width: '4.5rem' }}
+                                                autoFocus
+                                              />
+                                              <span className="text-xs" style={{ color: 'var(--text-3)' }}>%</span>
+                                            </div>
+                                            <select
+                                              value={formRepasse.destinoId}
+                                              onChange={e => setFormRepasse(prev => prev ? { ...prev, destinoId: e.target.value } : null)}
+                                              className="form-select flex-1"
+                                              style={{ minWidth: '9rem' }}
                                             >
-                                              {salvandoRepasse ? '...' : 'Salvar'}
-                                            </button>
-                                            <button onClick={() => setFormRepasse(null)} className="btn-secondary px-2 py-1.5">
-                                              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
-                                            </button>
+                                              <option value="">Selecionar dentista...</option>
+                                              {listaDentistas.filter(dd => dd.id !== dentistaId).map(dd => (
+                                                <option key={dd.id} value={dd.id}>{dd.nome}</option>
+                                              ))}
+                                            </select>
+                                            <div className="flex gap-1.5">
+                                              <button
+                                                onClick={() => adicionarRepasse(l.id)}
+                                                disabled={!formRepasse.percentual || !formRepasse.destinoId || salvandoRepasse}
+                                                className="btn-primary px-3 py-1.5 text-xs"
+                                              >
+                                                {salvandoRepasse ? '...' : 'Salvar'}
+                                              </button>
+                                              <button onClick={() => setFormRepasse(null)} className="btn-secondary px-2 py-1.5">
+                                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
+                                              </button>
+                                            </div>
                                           </div>
+                                          {formRepasse.percentual && !isNaN(parseFloat(formRepasse.percentual)) && (
+                                            <p className="text-xs" style={{ color: 'var(--text-3)' }}>
+                                              Repasse: R$ {fmt(Math.round(baseRepasse(l) * parseFloat(formRepasse.percentual) / 100 * 100) / 100)}
+                                              {' '}· fica na clínica: R$ {fmt(Math.round(baseRepasse(l) * (1 - parseFloat(formRepasse.percentual) / 100) * 100) / 100)}
+                                            </p>
+                                          )}
                                         </div>
                                       ) : (
                                         <button

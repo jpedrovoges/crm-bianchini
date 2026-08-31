@@ -3,10 +3,11 @@
 import { useState, useEffect } from 'react'
 import { supabase } from '@/lib/supabase'
 import { useSession } from '@/app/dashboard/SessionProvider'
+import { formatarNome, formatarCpf } from '@/lib/formatarNome'
 
 const MESES = ['Janeiro','Fevereiro','Março','Abril','Maio','Junho','Julho','Agosto','Setembro','Outubro','Novembro','Dezembro']
 const DIAS_SEMANA = ['Dom','Seg','Ter','Qua','Qui','Sex','Sáb']
-const FORMAS = ['Pix', 'Dinheiro', 'Cartão Crédito', 'Cartão Débito', 'Convênio', 'Boleto']
+const FORMAS = ['Pix', 'Dinheiro', 'Cartão Crédito', 'Cartão Débito', 'Convênio', 'Elo Saúde', 'Boleto']
 
 type Visao = 'diario' | 'mensal' | 'anual'
 
@@ -49,6 +50,11 @@ const formVazio = {
   numero_nf:              '',
   categoria:              'procedimento' as 'venda' | 'procedimento',
   observacao:             '',
+}
+
+const formPacienteVazio = {
+  nome: '', telefone: '', email: '', cpf: '', data_nascimento: '', observacoes: '',
+  cep: '', endereco: '', numero: '', complemento: '', bairro: '', cidade: '', estado: '',
 }
 
 function toISO(ano: number, mes: number, dia: number) {
@@ -95,8 +101,13 @@ export default function MovimentoDiarioPage() {
 
   // modal novo paciente
   const [modalPaciente, setModalPaciente]   = useState(false)
-  const [formPaciente, setFormPaciente]     = useState({ nome: '', telefone: '', cpf: '', email: '', data_nascimento: '', observacoes: '' })
+  const [formPaciente, setFormPaciente]     = useState(formPacienteVazio)
   const [salvandoPaciente, setSalvandoPaciente] = useState(false)
+  const [buscandoCep, setBuscandoCep]       = useState(false)
+
+  // busca de paciente (autocomplete) no lançamento de receita
+  const [buscaPaciente, setBuscaPaciente]       = useState('')
+  const [mostrarPacientes, setMostrarPacientes] = useState(false)
 
   // modal novo destinatário
   const [modalDestinatario, setModalDestinatario]   = useState(false)
@@ -181,8 +192,9 @@ export default function MovimentoDiarioPage() {
   }
 
   // ── CRUD ──
-  // Descrição é derivada automaticamente: nome do paciente (receita) ou do
-  // destinatário/dentista responsável (despesa) — não há mais campo livre.
+  // Receita: descrição é sempre derivada automaticamente do nome do paciente
+  // (sem campo livre). Despesa: o vínculo (dentista/destinatário) só serve de
+  // sugestão inicial — o campo Descrição fica editável para o usuário ajustar.
   function computeDescricao(f: typeof form): string {
     if (f.tipo === 'receita') {
       const paciente = pacientes.find(p => p.id === f.paciente_id)
@@ -193,6 +205,45 @@ export default function MovimentoDiarioPage() {
     if (dentista) return `Despesa - ${dentista.nome}`
     const dest = destinatarios.find(d => d.id === f.destinatario_id)
     return dest?.nome ?? 'Despesa'
+  }
+
+  // busca (autocomplete) de paciente na receita
+  function selecionarPaciente(p: Paciente) {
+    setBuscaPaciente(p.nome)
+    setMostrarPacientes(false)
+    setForm(f => {
+      const next = { ...f, paciente_id: p.id }
+      return { ...next, descricao: computeDescricao(next) }
+    })
+  }
+
+  function limparPaciente() {
+    setBuscaPaciente('')
+    setMostrarPacientes(false)
+    setForm(f => {
+      const next = { ...f, paciente_id: '', nota_fiscal: false, numero_nf: '' }
+      return { ...next, descricao: computeDescricao(next) }
+    })
+  }
+
+  async function buscarCep(cep: string) {
+    const limpo = cep.replace(/\D/g, '')
+    if (limpo.length !== 8) return
+    setBuscandoCep(true)
+    try {
+      const res = await fetch(`https://viacep.com.br/ws/${limpo}/json/`)
+      const data = await res.json()
+      if (!data.erro) {
+        setFormPaciente(f => ({
+          ...f,
+          endereco: data.logradouro ?? f.endereco,
+          bairro: data.bairro ?? f.bairro,
+          cidade: data.localidade ?? f.cidade,
+          estado: data.uf ?? f.estado,
+        }))
+      }
+    } catch {}
+    setBuscandoCep(false)
   }
 
   function abrirEdicao(l: Lancamento) {
@@ -213,6 +264,8 @@ export default function MovimentoDiarioPage() {
       categoria:               (l.categoria as 'venda' | 'procedimento') ?? 'procedimento',
       observacao:              l.observacao ?? '',
     })
+    setBuscaPaciente(l.pacientes?.nome ?? '')
+    setMostrarPacientes(false)
     setModal(true)
   }
 
@@ -259,7 +312,7 @@ export default function MovimentoDiarioPage() {
         .select('*, pacientes(nome), destinatarios(nome, tipo), dentistas_responsavel:dentistas!dentista_responsavel_id(nome)')
         .eq('data', dataHoje).order('created_at')
       if (atualizado) setLancamentosDia(atualizado as Lancamento[])
-      setEditandoId(null); setForm(formVazio); setSalvando(false); setModal(false)
+      setEditandoId(null); setForm(formVazio); setBuscaPaciente(''); setSalvando(false); setModal(false)
       return
     }
 
@@ -304,23 +357,24 @@ export default function MovimentoDiarioPage() {
     const novoDots  = inserts.filter(l => l.data.startsWith(prefixMes)).map(l => l.data)
     if (novoDots.length) setDiasComMovimento(prev => new Set([...prev, ...novoDots]))
 
-    setForm(formVazio); setSalvando(false); setModal(false)
+    setForm(formVazio); setBuscaPaciente(''); setSalvando(false); setModal(false)
   }
 
   async function salvarPaciente() {
-    if (!formPaciente.nome.trim() || !formPaciente.telefone.trim() || !formPaciente.cpf.trim()) return
+    if (!formPaciente.nome.trim()) return
     setSalvandoPaciente(true)
     const { data, error } = await supabase.from('pacientes')
-      .insert({
-        nome: formPaciente.nome.trim(), telefone: formPaciente.telefone.trim(),
-        cpf: formPaciente.cpf.trim(), email: formPaciente.email || null,
-        data_nascimento: formPaciente.data_nascimento || null, observacoes: formPaciente.observacoes || null,
-      })
+      .insert(formPaciente)
       .select('id, nome').single()
     if (error) { setSalvandoPaciente(false); return }
     setPacientes(prev => [...prev, data].sort((a, b) => a.nome.localeCompare(b.nome, 'pt-BR')))
-    setForm(f => ({ ...f, paciente_id: data.id }))
-    setFormPaciente({ nome: '', telefone: '', cpf: '', email: '', data_nascimento: '', observacoes: '' })
+    setForm(f => {
+      const next = { ...f, paciente_id: data.id }
+      return { ...next, descricao: computeDescricao(next) }
+    })
+    setBuscaPaciente(data.nome)
+    setMostrarPacientes(false)
+    setFormPaciente(formPacienteVazio)
     setSalvandoPaciente(false); setModalPaciente(false)
   }
 
@@ -388,6 +442,8 @@ export default function MovimentoDiarioPage() {
   const dentistas = destinatarios.filter(d => d.tipo === 'dentista')
   const empresas  = destinatarios.filter(d => d.tipo === 'empresa')
 
+  const pacientesFiltrados = pacientes.filter(p => p.nome.toLowerCase().includes(buscaPaciente.trim().toLowerCase()))
+
   // ── Helpers UI ──
   function SummaryCards({ rec, desp }: { rec: number; desp: number }) {
     return (
@@ -415,9 +471,27 @@ export default function MovimentoDiarioPage() {
     const catLabel      = l.categoria === 'venda' ? 'Venda' : l.categoria === 'procedimento' ? 'Procedimento' : null
     const dentista      = l.tipo === 'receita' ? (listaDentistas.find(d => d.id === l.dentista_id)?.nome ?? null) : null
     const dentResp      = l.tipo === 'despesa' ? (l.dentistas_responsavel?.nome ?? null) : null
+    // Tag de convênio/plano na linha do lançamento:
+    // - "Celos": lote importado pela planilha (nunca tem paciente vinculado,
+    //   o nome vem só como texto), diferente de um "Convênio" avulso lançado
+    //   manualmente com um paciente cadastrado selecionado.
+    // - "Elo Saúde": forma própria, selecionada manualmente ao lançar a
+    //   venda/procedimento na conta da clínica (dentista responsável =
+    //   Marco Bianchini); o repasse pro dentista de destino desconta o
+    //   imposto de NF (ver financeiro/[dentistaId]/page.tsx).
+    // Ambas entram só esporadicamente (não são do dia a dia), por isso
+    // ganham destaque visual diferente das demais linhas.
+    const tagPlano =
+      l.tipo === 'receita' && l.forma === 'Convênio' && !l.paciente_id ? 'Celos' :
+      l.tipo === 'receita' && l.forma === 'Elo Saúde' ? 'Elo Saúde' :
+      null
     return (
       <div className="rounded-lg border transition-colors flex items-center gap-3 px-3"
-        style={{ borderColor: 'var(--border)', backgroundColor: 'var(--surface)', minHeight: '2rem' }}>
+        style={{
+          borderColor: tagPlano ? 'var(--accent)' : 'var(--border)',
+          backgroundColor: tagPlano ? 'var(--accent-soft)' : 'var(--surface)',
+          minHeight: '2rem',
+        }}>
         <div className={`flex-shrink-0 ${l.tipo === 'receita' ? 'dot-receita' : 'dot-despesa'}`} />
         <div className="flex-1 min-w-0 py-2">
           <p className="text-sm truncate" style={{ color: 'var(--text-1)' }}>{l.descricao}</p>
@@ -431,6 +505,11 @@ export default function MovimentoDiarioPage() {
             {l.nota_fiscal ? ` · NF${l.numero_nf ? ` ${l.numero_nf}` : ''}` : ''}
           </p>
         </div>
+        {tagPlano && (
+          <span className="flex-shrink-0 text-xs px-2 py-0.5 rounded-full font-medium" style={{ backgroundColor: 'var(--accent)', color: 'white' }}>
+            {tagPlano}
+          </span>
+        )}
         <p className={`text-sm font-medium flex-shrink-0 ${l.tipo === 'receita' ? 'text-receita' : 'text-despesa'}`}>
           {l.tipo === 'receita' ? '+' : '-'} R$ {fmt(l.valor)}
         </p>
@@ -550,7 +629,7 @@ export default function MovimentoDiarioPage() {
                         </button>
                       </div>
                     )}
-                    <button onClick={() => { setErro(null); setForm(formVazio); setConfirmarLimparDia(false); setModal(true) }} className="btn-primary px-3 py-1.5">+ Adicionar</button>
+                    <button onClick={() => { setErro(null); setForm(formVazio); setBuscaPaciente(''); setMostrarPacientes(false); setConfirmarLimparDia(false); setModal(true) }} className="btn-primary px-3 py-1.5">+ Adicionar</button>
                   </div>
                 </div>
                 {lancamentosDia.length > 0 && <SummaryCards rec={recDia} desp={despDia} />}
@@ -651,22 +730,109 @@ export default function MovimentoDiarioPage() {
       {/* ── Modal: Novo Paciente ── */}
       {modalPaciente && (
         <div className="modal-overlay" style={{ zIndex: 60 }}>
-          <div className="modal max-w-sm">
+          <div className="modal max-w-lg">
             <div className="modal-header">
               <h3 className="modal-title">Novo Paciente</h3>
-              <button onClick={() => setModalPaciente(false)} className="nav-icon hover:text-red-400 transition-colors"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 6L6 18M6 6l12 12"/></svg></button>
+              <button onClick={() => { setModalPaciente(false); setFormPaciente(formPacienteVazio) }} className="nav-icon hover:text-red-400 transition-colors">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
+              </button>
             </div>
+
             <div className="flex flex-col gap-3">
-              <div><label className="form-label">Nome completo <span className="text-red-400">*</span></label><input type="text" value={formPaciente.nome} onChange={e => setFormPaciente(f => ({ ...f, nome: e.target.value }))} placeholder="Ex: José Silva" className="form-input" autoFocus /></div>
-              <div><label className="form-label">Telefone <span className="text-red-400">*</span></label><input type="tel" value={formPaciente.telefone} onChange={e => setFormPaciente(f => ({ ...f, telefone: e.target.value }))} placeholder="(48) 99999-9999" className="form-input" /></div>
-              <div><label className="form-label">CPF <span className="text-red-400">*</span></label><input type="text" value={formPaciente.cpf} onChange={e => setFormPaciente(f => ({ ...f, cpf: e.target.value }))} placeholder="000.000.000-00" className="form-input" /></div>
-              <div><label className="form-label">E-mail</label><input type="email" value={formPaciente.email} onChange={e => setFormPaciente(f => ({ ...f, email: e.target.value }))} placeholder="jose@email.com" className="form-input" /></div>
-              <div><label className="form-label">Data de Nasc.</label><input type="date" value={formPaciente.data_nascimento} onChange={e => setFormPaciente(f => ({ ...f, data_nascimento: e.target.value }))} className="form-input" /></div>
-              <div><label className="form-label">Observações</label><textarea value={formPaciente.observacoes} onChange={e => setFormPaciente(f => ({ ...f, observacoes: e.target.value }))} placeholder="Alergias, observações clínicas..." rows={3} className="form-textarea" /></div>
+              {/* Dados pessoais */}
+              <p className="text-xs font-semibold uppercase tracking-widest" style={{ color: 'var(--text-3)' }}>Dados pessoais</p>
+              <div>
+                <label className="form-label">Nome completo <span className="text-red-400">*</span></label>
+                <input type="text" value={formPaciente.nome} onChange={e => setFormPaciente(f => ({ ...f, nome: formatarNome(e.target.value) }))}
+                  placeholder="Ex: José Silva" className="form-input" autoFocus />
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="form-label">CPF</label>
+                  <input type="text" value={formPaciente.cpf} onChange={e => setFormPaciente(f => ({ ...f, cpf: formatarCpf(e.target.value) }))} maxLength={14} inputMode="numeric"
+                    placeholder="000.000.000-00" className="form-input" />
+                </div>
+                <div>
+                  <label className="form-label">Data de Nascimento</label>
+                  <input type="date" value={formPaciente.data_nascimento} onChange={e => setFormPaciente(f => ({ ...f, data_nascimento: e.target.value }))}
+                    className="form-input" />
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="form-label">Telefone</label>
+                  <input type="tel" value={formPaciente.telefone} onChange={e => setFormPaciente(f => ({ ...f, telefone: e.target.value }))}
+                    placeholder="(48) 99999-9999" className="form-input" />
+                </div>
+                <div>
+                  <label className="form-label">E-mail</label>
+                  <input type="email" value={formPaciente.email} onChange={e => setFormPaciente(f => ({ ...f, email: e.target.value }))}
+                    placeholder="jose@email.com" className="form-input" />
+                </div>
+              </div>
+
+              {/* Endereço */}
+              <p className="text-xs font-semibold uppercase tracking-widest mt-1" style={{ color: 'var(--text-3)' }}>Endereço</p>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="form-label">CEP</label>
+                  <div className="relative">
+                    <input type="text" value={formPaciente.cep}
+                      onChange={e => { setFormPaciente(f => ({ ...f, cep: e.target.value })); buscarCep(e.target.value) }}
+                      placeholder="00000-000" className="form-input" maxLength={9} />
+                    {buscandoCep && (
+                      <span className="absolute right-2 top-1/2 -translate-y-1/2 text-xs" style={{ color: 'var(--text-3)' }}>buscando...</span>
+                    )}
+                  </div>
+                </div>
+                <div>
+                  <label className="form-label">Estado</label>
+                  <input type="text" value={formPaciente.estado} onChange={e => setFormPaciente(f => ({ ...f, estado: e.target.value }))}
+                    placeholder="SC" className="form-input" maxLength={2} />
+                </div>
+              </div>
+              <div>
+                <label className="form-label">Logradouro</label>
+                <input type="text" value={formPaciente.endereco} onChange={e => setFormPaciente(f => ({ ...f, endereco: e.target.value }))}
+                  placeholder="Rua, Avenida..." className="form-input" />
+              </div>
+              <div className="grid grid-cols-3 gap-3">
+                <div>
+                  <label className="form-label">Número</label>
+                  <input type="text" value={formPaciente.numero} onChange={e => setFormPaciente(f => ({ ...f, numero: e.target.value }))}
+                    placeholder="123" className="form-input" />
+                </div>
+                <div className="col-span-2">
+                  <label className="form-label">Complemento</label>
+                  <input type="text" value={formPaciente.complemento} onChange={e => setFormPaciente(f => ({ ...f, complemento: e.target.value }))}
+                    placeholder="Apto, Sala..." className="form-input" />
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="form-label">Bairro</label>
+                  <input type="text" value={formPaciente.bairro} onChange={e => setFormPaciente(f => ({ ...f, bairro: e.target.value }))}
+                    placeholder="Centro" className="form-input" />
+                </div>
+                <div>
+                  <label className="form-label">Cidade</label>
+                  <input type="text" value={formPaciente.cidade} onChange={e => setFormPaciente(f => ({ ...f, cidade: e.target.value }))}
+                    placeholder="Florianópolis" className="form-input" />
+                </div>
+              </div>
+
+              {/* Observações */}
+              <p className="text-xs font-semibold uppercase tracking-widest mt-1" style={{ color: 'var(--text-3)' }}>Clínico</p>
+              <div>
+                <label className="form-label">Observações</label>
+                <textarea value={formPaciente.observacoes} onChange={e => setFormPaciente(f => ({ ...f, observacoes: e.target.value }))}
+                  placeholder="Alergias, observações clínicas..." rows={3} className="form-textarea" />
+              </div>
             </div>
+
             <div className="flex gap-2 mt-5">
-              <button onClick={() => setModalPaciente(false)} className="btn-secondary flex-1 py-2">Cancelar</button>
-              <button onClick={salvarPaciente} disabled={!formPaciente.nome.trim() || !formPaciente.telefone.trim() || !formPaciente.cpf.trim() || salvandoPaciente} className="btn-primary flex-1 py-2">
+              <button onClick={() => { setModalPaciente(false); setFormPaciente(formPacienteVazio) }} className="btn-secondary flex-1 py-2">Cancelar</button>
+              <button onClick={salvarPaciente} disabled={!formPaciente.nome.trim() || salvandoPaciente} className="btn-primary flex-1 py-2">
                 {salvandoPaciente ? 'Salvando...' : 'Cadastrar'}
               </button>
             </div>
@@ -746,10 +912,13 @@ export default function MovimentoDiarioPage() {
             <div className="flex gap-2 mb-4">
               {(['receita', 'despesa'] as const).map(t => (
                 <button key={t}
-                  onClick={() => setForm(f => {
-                    const next = { ...f, tipo: t, paciente_id: '', destinatario_id: '', dentista_id: '', dentista_responsavel_id: '', nota_fiscal: false, numero_nf: '', categoria: 'procedimento' as const, observacao: '' }
-                    return { ...next, descricao: computeDescricao(next) }
-                  })}
+                  onClick={() => {
+                    setBuscaPaciente(''); setMostrarPacientes(false)
+                    setForm(f => {
+                      const next = { ...f, tipo: t, paciente_id: '', destinatario_id: '', dentista_id: '', dentista_responsavel_id: '', nota_fiscal: false, numero_nf: '', categoria: 'procedimento' as const, observacao: '' }
+                      return { ...next, descricao: computeDescricao(next) }
+                    })
+                  }}
                   className={`tipo-btn ${form.tipo === t ? (t === 'receita' ? 'tipo-receita-active' : 'tipo-despesa-active') : ''}`}>
                   {t === 'receita' ? 'Receita' : 'Despesa'}
                 </button>
@@ -824,20 +993,54 @@ export default function MovimentoDiarioPage() {
                       {listaDentistas.map(d => <option key={d.id} value={d.id}>{d.nome}</option>)}
                     </select>
                   </div>
-                  <div>
+                  <div className="relative">
                     <div className="flex items-center justify-between mb-1">
                       <label className="form-label mb-0">Paciente <span className="nav-icon">(opcional)</span></label>
-                      <button type="button" onClick={() => setModalPaciente(true)} className="text-xs transition-colors" style={{ color: 'var(--accent)' }}>+ Novo paciente</button>
+                      <button type="button"
+                        onClick={() => { setFormPaciente({ ...formPacienteVazio, nome: formatarNome(buscaPaciente) }); setModalPaciente(true) }}
+                        className="text-xs transition-colors" style={{ color: 'var(--accent)' }}>+ Novo paciente</button>
                     </div>
-                    <select value={form.paciente_id}
-                      onChange={e => setForm(f => {
-                        const next = { ...f, paciente_id: e.target.value, nota_fiscal: e.target.value ? f.nota_fiscal : false, numero_nf: e.target.value ? f.numero_nf : '' }
-                        return { ...next, descricao: computeDescricao(next) }
-                      })}
-                      className="form-select">
-                      <option value="">— Nenhum —</option>
-                      {pacientes.map(p => <option key={p.id} value={p.id}>{p.nome}</option>)}
-                    </select>
+                    <div className="relative">
+                      <input type="text" value={buscaPaciente}
+                        onChange={e => {
+                          const val = e.target.value
+                          setBuscaPaciente(val)
+                          setMostrarPacientes(true)
+                          if (form.paciente_id) {
+                            setForm(f => {
+                              const next = { ...f, paciente_id: '', nota_fiscal: false, numero_nf: '' }
+                              return { ...next, descricao: computeDescricao(next) }
+                            })
+                          }
+                        }}
+                        onFocus={() => setMostrarPacientes(true)}
+                        onBlur={() => setTimeout(() => setMostrarPacientes(false), 150)}
+                        placeholder="Buscar paciente pelo nome..."
+                        className="form-input pr-7" />
+                      {buscaPaciente && (
+                        <button type="button" onMouseDown={limparPaciente}
+                          className="absolute right-2 top-1/2 -translate-y-1/2 nav-icon hover:text-red-400 transition-colors">
+                          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
+                        </button>
+                      )}
+                    </div>
+                    {mostrarPacientes && (
+                      <div className="absolute z-20 mt-1 w-full max-h-52 overflow-y-auto rounded-lg border shadow-lg"
+                        style={{ backgroundColor: 'var(--surface)', borderColor: 'var(--border)' }}>
+                        {pacientesFiltrados.length === 0 ? (
+                          <p className="px-3 py-2 text-xs" style={{ color: 'var(--text-3)' }}>Nenhum paciente encontrado</p>
+                        ) : (
+                          pacientesFiltrados.map(p => (
+                            <button key={p.id} type="button"
+                              onMouseDown={() => selecionarPaciente(p)}
+                              className="w-full text-left px-3 py-2 text-sm transition-colors hover:bg-[var(--surface-muted)]"
+                              style={{ color: 'var(--text-1)' }}>
+                              {p.nome}
+                            </button>
+                          ))
+                        )}
+                      </div>
+                    )}
                   </div>
                   {form.paciente_id && (
                     <div>
@@ -907,6 +1110,16 @@ export default function MovimentoDiarioPage() {
                       </optgroup>
                     )}
                   </select>
+                </div>
+              )}
+
+              {/* ── Despesa: Descrição (editável — receita continua automática pelo nome do paciente) ── */}
+              {form.tipo === 'despesa' && (
+                <div>
+                  <label className="form-label">Descrição</label>
+                  <input type="text" value={form.descricao}
+                    onChange={e => setForm(f => ({ ...f, descricao: e.target.value }))}
+                    placeholder="Ex: Material de consumo" className="form-input" />
                 </div>
               )}
             </div>
