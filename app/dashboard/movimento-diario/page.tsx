@@ -199,7 +199,8 @@ export default function MovimentoDiarioPage() {
     if (f.tipo === 'receita') {
       const paciente = pacientes.find(p => p.id === f.paciente_id)
       if (paciente) return paciente.nome
-      return f.categoria === 'venda' ? 'Venda' : (f.observacao.trim() || 'Procedimento')
+      const fallback = f.categoria === 'venda' ? 'Venda' : 'Procedimento'
+      return f.observacao.trim() || fallback
     }
     const dentista = listaDentistas.find(d => d.id === f.dentista_responsavel_id)
     if (dentista) return `Despesa - ${dentista.nome}`
@@ -301,7 +302,7 @@ export default function MovimentoDiarioPage() {
         nota_fiscal:             form.tipo === 'receita' ? form.nota_fiscal : false,
         numero_nf:               form.tipo === 'receita' && form.nota_fiscal && form.numero_nf.trim() ? form.numero_nf.trim() : null,
         categoria:               form.tipo === 'receita' ? form.categoria : null,
-        observacao:              form.tipo === 'receita' && form.categoria === 'procedimento' && form.observacao.trim() ? form.observacao.trim() : null,
+        observacao:              form.tipo === 'receita' && form.observacao.trim() ? form.observacao.trim() : null,
         dentista_id:             form.tipo === 'receita' ? (form.dentista_id || null) : null,
         dentista_responsavel_id: despComDentista ? form.dentista_responsavel_id : null,
       }
@@ -338,7 +339,7 @@ export default function MovimentoDiarioPage() {
         nota_fiscal:             form.tipo === 'receita' ? form.nota_fiscal : false,
         numero_nf:               form.tipo === 'receita' && form.nota_fiscal && form.numero_nf.trim() ? form.numero_nf.trim() : null,
         categoria:               form.tipo === 'receita' ? form.categoria : null,
-        observacao:              form.tipo === 'receita' && form.categoria === 'procedimento' && form.observacao.trim() ? form.observacao.trim() : null,
+        observacao:              form.tipo === 'receita' && form.observacao.trim() ? form.observacao.trim() : null,
         dentista_id:             form.tipo === 'receita' ? (form.dentista_id || null) : null,
         dentista_responsavel_id: despComDentista ? form.dentista_responsavel_id : null,
       }
@@ -963,7 +964,7 @@ export default function MovimentoDiarioPage() {
                       {(['procedimento', 'venda'] as const).map(cat => (
                         <button key={cat} type="button"
                           onClick={() => setForm(f => {
-                            const next = { ...f, categoria: cat, observacao: cat === 'venda' ? '' : f.observacao }
+                            const next = { ...f, categoria: cat, observacao: '' }
                             return { ...next, descricao: computeDescricao(next) }
                           })}
                           className={`tipo-btn flex-1 py-1.5 text-xs ${form.categoria === cat ? 'bg-[var(--surface-muted)] border-[var(--border-hover)] text-[var(--text-1)] font-medium' : ''}`}>
@@ -972,18 +973,16 @@ export default function MovimentoDiarioPage() {
                       ))}
                     </div>
                   </div>
-                  {form.categoria === 'procedimento' && (
-                    <div>
-                      <label className="form-label">Observação <span className="nav-icon">(opcional)</span></label>
-                      <input type="text" value={form.observacao}
-                        onChange={e => setForm(f => {
-                          const next = { ...f, observacao: e.target.value }
-                          return { ...next, descricao: computeDescricao(next) }
-                        })}
-                        placeholder="Ex: Profilaxia + aplicação de flúor"
-                        className="form-input" />
-                    </div>
-                  )}
+                  <div>
+                    <label className="form-label">{form.categoria === 'venda' ? 'Especificação' : 'Observação'} <span className="nav-icon">(opcional)</span></label>
+                    <input type="text" value={form.observacao}
+                      onChange={e => setForm(f => {
+                        const next = { ...f, observacao: e.target.value }
+                        return { ...next, descricao: computeDescricao(next) }
+                      })}
+                      placeholder={form.categoria === 'venda' ? 'Ex: Kit de clareamento dental' : 'Ex: Profilaxia + aplicação de flúor'}
+                      className="form-input" />
+                  </div>
                   <div>
                     <label className="form-label">Dentista responsável <span className="nav-icon">(opcional)</span></label>
                     <select value={form.dentista_id}
