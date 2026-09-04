@@ -1048,6 +1048,12 @@ export default function MovimentoDiarioPage() {
               <button onClick={() => { setEditandoNFId(null); setEditandoNFLancamento(null); setFormNF(''); setValorProcedimentoNF(null) }} className="nav-icon hover:text-red-400 transition-colors"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 6L6 18M6 6l12 12"/></svg></button>
             </div>
             <div className="mb-4">
+              <p className="form-label mb-1">Dentista responsável</p>
+              <p className="text-sm font-medium" style={{ color: 'var(--text-1)' }}>
+                {listaDentistas.find(d => d.id === editandoNFLancamento?.dentista_id)?.nome ?? '...'}
+              </p>
+            </div>
+            <div className="mb-4">
               <p className="form-label mb-1">Valor do procedimento</p>
               <p className="text-sm font-medium" style={{ color: 'var(--text-1)' }}>
                 {valorProcedimentoNF === null ? '...' : `R$ ${fmt(valorProcedimentoNF)}`}
