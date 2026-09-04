@@ -115,23 +115,58 @@ export default function MovimentoDiarioPage() {
   const [salvandoDestinatario, setSalvandoDestinatario] = useState(false)
 
   // edição e confirmação de exclusão
-  const [editandoId, setEditandoId]       = useState<string | null>(null)
+  const [editandoId, setEditandoId]           = useState<string | null>(null)
+  const [editandoLancamento, setEditandoLancamento] = useState<Lancamento | null>(null)
   const [confirmandoId, setConfirmandoId] = useState<string | null>(null)
   const [confirmarLimparDia, setConfirmarLimparDia] = useState(false)
 
   // edição do número da NF (recepção, apenas dentistas que emitem nota fiscal)
-  const [editandoNFId, setEditandoNFId] = useState<string | null>(null)
-  const [formNF, setFormNF]             = useState('')
-  const [salvandoNF, setSalvandoNF]     = useState(false)
+  const [editandoNFId, setEditandoNFId]                 = useState<string | null>(null)
+  const [editandoNFLancamento, setEditandoNFLancamento] = useState<Lancamento | null>(null)
+  const [formNF, setFormNF]                             = useState('')
+  const [salvandoNF, setSalvandoNF]                     = useState(false)
+  const [valorProcedimentoNF, setValorProcedimentoNF]   = useState<number | null>(null)
+
+  // adiantamento de parcelas (recepção e admin/gestor, só dentista José Moisés)
+  const [confirmandoAdiantarId, setConfirmandoAdiantarId] = useState<string | null>(null)
+  const [adiantando, setAdiantando]                       = useState(false)
 
   const session    = useSession()
-  const podeEditar = session?.role === 'admin' || session?.role === 'gestor'
+  // Edição completa (valor, paciente etc.) via lápis: admin/gestor sempre puderam;
+  // recepção também passou a poder, mas foi orientada a usar só em caso extremo —
+  // o fluxo normal da recepção é o botão "NF" abaixo, que só toca o número da nota.
+  const podeEditarAdmin = session?.role === 'admin' || session?.role === 'gestor'
+  const podeEditar      = podeEditarAdmin || session?.role === 'recepcao'
 
   // Dentistas que emitem nota fiscal e cuja recepção pode preencher o número da NF
   function dentistaEmiteNF(dentistaId: string | null) {
     const nome = listaDentistas.find(d => d.id === dentistaId)?.nome ?? ''
     const norm = nome.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase()
     return norm.includes('moises') || norm.includes('raissa')
+  }
+
+  // José Moisés costuma pedir pra antecipar o restante de uma venda parcelada
+  // numa parcela só — recepção também precisa poder fazer isso, não só admin/gestor.
+  function dentistaJoseMoises(dentistaId: string | null) {
+    const nome = listaDentistas.find(d => d.id === dentistaId)?.nome ?? ''
+    const norm = nome.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase()
+    return norm.includes('moises')
+  }
+
+  // Parcelas são lançamentos avulsos (sem vínculo em banco), reconhecidos só
+  // pelo sufixo "(i/N)" na descrição — ver a montagem de `inserts` em salvar().
+  function parseParcela(descricao: string): { base: string; i: number; n: number } | null {
+    const m = descricao.match(/^(.*) \((\d+)\/(\d+)\)$/)
+    if (!m) return null
+    return { base: m[1], i: parseInt(m[2], 10), n: parseInt(m[3], 10) }
+  }
+
+  function podeAdiantar(l: Lancamento) {
+    if (l.tipo !== 'receita') return false
+    if (session?.role !== 'admin' && session?.role !== 'gestor' && session?.role !== 'recepcao') return false
+    if (!dentistaJoseMoises(l.dentista_id)) return false
+    const p = parseParcela(l.descricao)
+    return !!p && p.n > 1 && p.i < p.n
   }
 
   useEffect(() => {
@@ -250,6 +285,7 @@ export default function MovimentoDiarioPage() {
   function abrirEdicao(l: Lancamento) {
     setErro(null)
     setEditandoId(l.id)
+    setEditandoLancamento(l)
     setForm({
       tipo:                    l.tipo,
       descricao:               l.descricao,
@@ -270,20 +306,93 @@ export default function MovimentoDiarioPage() {
     setModal(true)
   }
 
-  function abrirEdicaoNF(l: Lancamento) {
+  // Busca os lançamentos-irmãos de uma parcela (mesma venda/despesa: mesmo
+  // tipo, paciente/dentista/destinatário e descrição-base "(i/N)"), usado
+  // pra mostrar o valor total do procedimento, replicar o número da NF e
+  // colar o valor editado nas demais parcelas.
+  async function buscarIrmasParcela(l: Lancamento, p: { base: string; i: number; n: number }) {
+    let query = supabase.from('lancamentos').select('id, descricao, valor').eq('tipo', l.tipo)
+    query = l.dentista_id ? query.eq('dentista_id', l.dentista_id) : query.is('dentista_id', null)
+    query = l.paciente_id ? query.eq('paciente_id', l.paciente_id) : query.is('paciente_id', null)
+    query = l.dentista_responsavel_id ? query.eq('dentista_responsavel_id', l.dentista_responsavel_id) : query.is('dentista_responsavel_id', null)
+    query = l.destinatario_id ? query.eq('destinatario_id', l.destinatario_id) : query.is('destinatario_id', null)
+    const { data: candidatos } = await query
+    return (candidatos ?? []).filter(c => {
+      if (c.id === l.id) return false
+      const pc = parseParcela(c.descricao)
+      return !!pc && pc.base === p.base && pc.n === p.n
+    })
+  }
+
+  async function abrirEdicaoNF(l: Lancamento) {
     setEditandoNFId(l.id)
+    setEditandoNFLancamento(l)
     setFormNF(l.numero_nf ?? '')
+    // Venda parcelada: a NF é feita pelo valor total do procedimento, não
+    // pelo valor de uma parcela isolada.
+    const p = parseParcela(l.descricao)
+    if (!p) { setValorProcedimentoNF(l.valor); return }
+    const irmas = await buscarIrmasParcela(l, p)
+    setValorProcedimentoNF(Number(l.valor) + irmas.reduce((s, c) => s + Number(c.valor), 0))
   }
 
   async function salvarNF() {
-    if (!editandoNFId) return
+    if (!editandoNFId || !editandoNFLancamento) return
     setSalvandoNF(true)
     const numero = formNF.trim() || null
     const { error } = await supabase.from('lancamentos').update({ numero_nf: numero }).eq('id', editandoNFId)
-    if (error) { setSalvandoNF(false); return }
-    setLancamentosDia(prev => prev.map(l => l.id === editandoNFId ? { ...l, numero_nf: numero } : l))
-    setLancamentosMes(prev => prev.map(l => l.id === editandoNFId ? { ...l, numero_nf: numero } : l))
-    setSalvandoNF(false); setEditandoNFId(null); setFormNF('')
+    if (error) { setErro(error.message); setSalvandoNF(false); return }
+
+    // Replica o mesmo número de NF pras demais parcelas da venda — a nota é
+    // uma só pro procedimento inteiro, mesmo pago em várias parcelas.
+    const p = parseParcela(editandoNFLancamento.descricao)
+    const idsIrmaos = p ? (await buscarIrmasParcela(editandoNFLancamento, p)).map(c => c.id) : []
+    if (idsIrmaos.length) {
+      await supabase.from('lancamentos').update({ numero_nf: numero }).in('id', idsIrmaos)
+    }
+
+    const idsAtualizados = [editandoNFId, ...idsIrmaos]
+    setLancamentosDia(prev => prev.map(l => idsAtualizados.includes(l.id) ? { ...l, numero_nf: numero } : l))
+    setLancamentosMes(prev => prev.map(l => idsAtualizados.includes(l.id) ? { ...l, numero_nf: numero } : l))
+    setSalvandoNF(false); setEditandoNFId(null); setEditandoNFLancamento(null); setFormNF(''); setValorProcedimentoNF(null)
+  }
+
+  // Puxa o valor de todas as parcelas futuras da mesma venda parcelada (mesmo
+  // paciente/dentista/descrição-base, índice maior que o desta) para dentro
+  // desta, e apaga as demais. As parcelas já passadas (índice menor) não são
+  // tocadas.
+  async function adiantarParcelas(l: Lancamento, origem: 'dia' | 'mes') {
+    const p = parseParcela(l.descricao)
+    if (!p) return
+    setAdiantando(true)
+
+    let query = supabase.from('lancamentos').select('id, descricao, valor')
+      .eq('tipo', 'receita').eq('dentista_id', l.dentista_id as string).gte('data', l.data)
+    query = l.paciente_id ? query.eq('paciente_id', l.paciente_id) : query.is('paciente_id', null)
+    const { data: candidatos, error: erroBusca } = await query
+    if (erroBusca) { setErro(erroBusca.message); setAdiantando(false); setConfirmandoAdiantarId(null); return }
+
+    const futuras = (candidatos ?? []).filter(c => {
+      if (c.id === l.id) return false
+      const pc = parseParcela(c.descricao)
+      return !!pc && pc.base === p.base && pc.n === p.n && pc.i > p.i
+    })
+
+    const novoValor     = Math.round((Number(l.valor) + futuras.reduce((s, c) => s + Number(c.valor), 0)) * 100) / 100
+    const novaDescricao = `${p.base} (adiantado)`
+
+    if (futuras.length) {
+      const { error } = await supabase.from('lancamentos').delete().in('id', futuras.map(f => f.id))
+      if (error) { setErro(error.message); setAdiantando(false); setConfirmandoAdiantarId(null); return }
+    }
+    const { error } = await supabase.from('lancamentos').update({ valor: novoValor, descricao: novaDescricao }).eq('id', l.id)
+    if (error) { setErro(error.message); setAdiantando(false); setConfirmandoAdiantarId(null); return }
+
+    const atualiza = (arr: Lancamento[]) => arr.map(x => x.id === l.id ? { ...x, valor: novoValor, descricao: novaDescricao } : x)
+    if (origem === 'dia') setLancamentosDia(prev => atualiza(prev))
+    else                  setLancamentosMes(prev => atualiza(prev))
+
+    setAdiantando(false); setConfirmandoAdiantarId(null)
   }
 
   async function salvar() {
@@ -308,12 +417,28 @@ export default function MovimentoDiarioPage() {
       }
       const { error } = await supabase.from('lancamentos').update(payload).eq('id', editandoId)
       if (error) { setErro(error.message); setSalvando(false); return }
+
+      // Parcelado: cola o valor editado nas demais parcelas da mesma venda/
+      // despesa — o valor corrigido vale pra todas, não só pra essa parcela.
+      if (editandoLancamento) {
+        const p = parseParcela(editandoLancamento.descricao)
+        if (p) {
+          const irmas = await buscarIrmasParcela(editandoLancamento, p)
+          if (irmas.length) {
+            await supabase.from('lancamentos').update({ valor: payload.valor }).in('id', irmas.map(c => c.id))
+            const idsIrmaos = irmas.map(c => c.id)
+            setLancamentosDia(prev => prev.map(l => idsIrmaos.includes(l.id) ? { ...l, valor: payload.valor } : l))
+            setLancamentosMes(prev => prev.map(l => idsIrmaos.includes(l.id) ? { ...l, valor: payload.valor } : l))
+          }
+        }
+      }
+
       const dataHoje = toISO(ano, mes, diaSelecionado)
       const { data: atualizado } = await supabase.from('lancamentos')
         .select('*, pacientes(nome), destinatarios(nome, tipo), dentistas_responsavel:dentistas!dentista_responsavel_id(nome)')
         .eq('data', dataHoje).order('created_at')
       if (atualizado) setLancamentosDia(atualizado as Lancamento[])
-      setEditandoId(null); setForm(formVazio); setBuscaPaciente(''); setSalvando(false); setModal(false)
+      setEditandoId(null); setEditandoLancamento(null); setForm(formVazio); setBuscaPaciente(''); setSalvando(false); setModal(false)
       return
     }
 
@@ -336,7 +461,10 @@ export default function MovimentoDiarioPage() {
         forma:                   despComDentista ? 'Desconto' : form.forma,
         paciente_id:             form.tipo === 'receita' ? (form.paciente_id || null) : null,
         destinatario_id:         form.tipo === 'despesa' && !despComDentista ? (form.destinatario_id || null) : null,
-        nota_fiscal:             form.tipo === 'receita' ? form.nota_fiscal : false,
+        // Parcelado: a nota fiscal é uma só pro procedimento inteiro, então só a
+        // 1ª parcela carrega a flag — evita repetir a etiqueta "NF" (e o botão de
+        // preencher número) em todas as parcelas com o valor errado (fracionado).
+        nota_fiscal:             form.tipo === 'receita' && form.nota_fiscal ? i === 0 : false,
         numero_nf:               form.tipo === 'receita' && form.nota_fiscal && form.numero_nf.trim() ? form.numero_nf.trim() : null,
         categoria:               form.tipo === 'receita' ? form.categoria : null,
         observacao:              form.tipo === 'receita' && form.observacao.trim() ? form.observacao.trim() : null,
@@ -459,7 +587,7 @@ export default function MovimentoDiarioPage() {
     )
   }
 
-  function LancamentoRow({ l, onRemove, confirmando, onConfirmar, onCancelar, onEditar, onEditarNF }: {
+  function LancamentoRow({ l, onRemove, confirmando, onConfirmar, onCancelar, onEditar, onEditarNF, onAdiantar, confirmandoAdiantar, onConfirmarAdiantar, onCancelarAdiantar }: {
     l: Lancamento
     onRemove?: () => void
     confirmando?: boolean
@@ -467,6 +595,10 @@ export default function MovimentoDiarioPage() {
     onCancelar?: () => void
     onEditar?: () => void
     onEditarNF?: () => void
+    onAdiantar?: () => void
+    confirmandoAdiantar?: boolean
+    onConfirmarAdiantar?: () => void
+    onCancelarAdiantar?: () => void
   }) {
     const vinculo       = l.tipo === 'receita' ? (l.pacientes?.nome ?? null) : (l.destinatarios?.nome ?? null)
     const catLabel      = l.categoria === 'venda' ? 'Venda' : l.categoria === 'procedimento' ? 'Procedimento' : null
@@ -514,12 +646,12 @@ export default function MovimentoDiarioPage() {
         <p className={`text-sm font-medium flex-shrink-0 ${l.tipo === 'receita' ? 'text-receita' : 'text-despesa'}`}>
           {l.tipo === 'receita' ? '+' : '-'} R$ {fmt(l.valor)}
         </p>
-        {onEditarNF && !confirmando && (
+        {onEditarNF && !confirmando && !confirmandoAdiantar && (
           <button onClick={onEditarNF} className="nav-icon hover:text-[var(--text-1)] transition-colors flex-shrink-0 text-xs font-semibold" title="Preencher número da NF">
             NF
           </button>
         )}
-        {onEditar && !confirmando && (
+        {onEditar && !confirmando && !confirmandoAdiantar && (
           <button onClick={onEditar} className="nav-icon hover:text-[var(--text-1)] transition-colors flex-shrink-0" title="Editar">
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
               <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
@@ -527,7 +659,27 @@ export default function MovimentoDiarioPage() {
             </svg>
           </button>
         )}
-        {onRemove && !confirmando && (
+        {onAdiantar && !confirmando && !confirmandoAdiantar && (
+          <button onClick={onAdiantar} className="nav-icon hover:text-[var(--text-1)] transition-colors flex-shrink-0" title="Adiantar parcelas restantes">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <polygon points="5 4 15 12 5 20 5 4"/>
+              <line x1="19" y1="5" x2="19" y2="19"/>
+            </svg>
+          </button>
+        )}
+        {onAdiantar && confirmandoAdiantar && (
+          <div className="flex items-center gap-1 flex-shrink-0">
+            <button onClick={onConfirmarAdiantar}
+              className="text-xs px-2 py-0.5 rounded font-medium"
+              style={{ backgroundColor: 'var(--accent-soft)', color: 'var(--accent)', border: '1px solid var(--accent)' }}>
+              Adiantar
+            </button>
+            <button onClick={onCancelarAdiantar} className="nav-icon hover:text-[var(--text-1)] transition-colors">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
+            </button>
+          </div>
+        )}
+        {onRemove && !confirmando && !confirmandoAdiantar && (
           <button onClick={onConfirmar} className="nav-icon hover:text-red-400 transition-colors flex-shrink-0">
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
               <polyline points="3 6 5 6 21 6"/>
@@ -630,7 +782,7 @@ export default function MovimentoDiarioPage() {
                         </button>
                       </div>
                     )}
-                    <button onClick={() => { setErro(null); setForm(formVazio); setBuscaPaciente(''); setMostrarPacientes(false); setConfirmarLimparDia(false); setModal(true) }} className="btn-primary px-3 py-1.5">+ Adicionar</button>
+                    <button onClick={() => { setErro(null); setForm(formVazio); setEditandoLancamento(null); setBuscaPaciente(''); setMostrarPacientes(false); setConfirmarLimparDia(false); setModal(true) }} className="btn-primary px-3 py-1.5">+ Adicionar</button>
                   </div>
                 </div>
                 {lancamentosDia.length > 0 && <SummaryCards rec={recDia} desp={despDia} />}
@@ -643,7 +795,11 @@ export default function MovimentoDiarioPage() {
                         onConfirmar={() => setConfirmandoId(l.id)}
                         onCancelar={() => setConfirmandoId(null)}
                         onEditar={podeEditar ? () => abrirEdicao(l) : undefined}
-                        onEditarNF={!podeEditar && session?.role === 'recepcao' && l.tipo === 'receita' && l.nota_fiscal && dentistaEmiteNF(l.dentista_id) ? () => abrirEdicaoNF(l) : undefined}
+                        onEditarNF={!podeEditarAdmin && session?.role === 'recepcao' && l.tipo === 'receita' && l.nota_fiscal && dentistaEmiteNF(l.dentista_id) ? () => abrirEdicaoNF(l) : undefined}
+                        onAdiantar={podeAdiantar(l) && !adiantando ? () => setConfirmandoAdiantarId(l.id) : undefined}
+                        confirmandoAdiantar={confirmandoAdiantarId === l.id}
+                        onConfirmarAdiantar={() => adiantarParcelas(l, 'dia')}
+                        onCancelarAdiantar={() => setConfirmandoAdiantarId(null)}
                       />
                     ))}</div>
                 }
@@ -688,7 +844,11 @@ export default function MovimentoDiarioPage() {
                           onConfirmar={() => setConfirmandoId(l.id)}
                           onCancelar={() => setConfirmandoId(null)}
                           onEditar={podeEditar ? () => abrirEdicao(l) : undefined}
-                          onEditarNF={!podeEditar && session?.role === 'recepcao' && l.tipo === 'receita' && l.nota_fiscal && dentistaEmiteNF(l.dentista_id) ? () => abrirEdicaoNF(l) : undefined}
+                          onEditarNF={!podeEditarAdmin && session?.role === 'recepcao' && l.tipo === 'receita' && l.nota_fiscal && dentistaEmiteNF(l.dentista_id) ? () => abrirEdicaoNF(l) : undefined}
+                          onAdiantar={podeAdiantar(l) && !adiantando ? () => setConfirmandoAdiantarId(l.id) : undefined}
+                          confirmandoAdiantar={confirmandoAdiantarId === l.id}
+                          onConfirmarAdiantar={() => adiantarParcelas(l, 'mes')}
+                          onCancelarAdiantar={() => setConfirmandoAdiantarId(null)}
                         />
                       ))}</div>
                     </div>
@@ -885,14 +1045,26 @@ export default function MovimentoDiarioPage() {
           <div className="modal max-w-sm">
             <div className="modal-header">
               <h3 className="modal-title">Número da Nota Fiscal</h3>
-              <button onClick={() => { setEditandoNFId(null); setFormNF('') }} className="nav-icon hover:text-red-400 transition-colors"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 6L6 18M6 6l12 12"/></svg></button>
+              <button onClick={() => { setEditandoNFId(null); setEditandoNFLancamento(null); setFormNF(''); setValorProcedimentoNF(null) }} className="nav-icon hover:text-red-400 transition-colors"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 6L6 18M6 6l12 12"/></svg></button>
+            </div>
+            <div className="mb-4">
+              <p className="form-label mb-1">Valor do procedimento</p>
+              <p className="text-sm font-medium" style={{ color: 'var(--text-1)' }}>
+                {valorProcedimentoNF === null ? '...' : `R$ ${fmt(valorProcedimentoNF)}`}
+              </p>
+              {parseParcela(editandoNFLancamento?.descricao ?? '') && (
+                <p className="text-xs mt-0.5" style={{ color: 'var(--text-3)' }}>Soma de todas as parcelas — a nota é feita pelo valor total, não pela parcela</p>
+              )}
             </div>
             <div>
               <label className="form-label">Número da NF <span className="nav-icon">(opcional)</span></label>
               <input type="text" value={formNF} onChange={e => setFormNF(e.target.value)} placeholder="Ex: 000123" className="form-input" autoFocus />
+              {parseParcela(editandoNFLancamento?.descricao ?? '') && (
+                <p className="text-xs mt-1.5" style={{ color: 'var(--text-3)' }}>Esse número será replicado para as demais parcelas desta venda</p>
+              )}
             </div>
             <div className="flex gap-2 mt-5">
-              <button onClick={() => { setEditandoNFId(null); setFormNF('') }} className="btn-secondary flex-1 py-2">Cancelar</button>
+              <button onClick={() => { setEditandoNFId(null); setEditandoNFLancamento(null); setFormNF(''); setValorProcedimentoNF(null) }} className="btn-secondary flex-1 py-2">Cancelar</button>
               <button onClick={salvarNF} disabled={salvandoNF} className="btn-primary flex-1 py-2">
                 {salvandoNF ? 'Salvando...' : 'Salvar'}
               </button>
@@ -907,7 +1079,7 @@ export default function MovimentoDiarioPage() {
           <div className="modal">
             <div className="modal-header">
               <h3 className="modal-title">{editandoId ? 'Editar Movimentação' : 'Nova Movimentação'}</h3>
-              <button onClick={() => { setModal(false); setEditandoId(null) }} className="nav-icon hover:text-red-400 transition-colors"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 6L6 18M6 6l12 12"/></svg></button>
+              <button onClick={() => { setModal(false); setEditandoId(null); setEditandoLancamento(null) }} className="nav-icon hover:text-red-400 transition-colors"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 6L6 18M6 6l12 12"/></svg></button>
             </div>
 
             <div className="flex gap-2 mb-4">
@@ -1126,7 +1298,7 @@ export default function MovimentoDiarioPage() {
             {erro && <p className="text-xs text-red-400 mt-3">{erro}</p>}
 
             <div className="flex gap-2 mt-5">
-              <button onClick={() => { setModal(false); setEditandoId(null) }} className="btn-secondary flex-1 py-2">Cancelar</button>
+              <button onClick={() => { setModal(false); setEditandoId(null); setEditandoLancamento(null) }} className="btn-secondary flex-1 py-2">Cancelar</button>
               <button onClick={salvar} disabled={!form.descricao || !form.valor || salvando} className="btn-primary flex-1 py-2">
                 {salvando ? 'Salvando...' : editandoId ? 'Atualizar' : 'Salvar'}
               </button>
