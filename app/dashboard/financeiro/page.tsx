@@ -26,6 +26,7 @@ type Lancamento = {
   categoria: string | null
   observacao: string | null
   dentista_id: string | null
+  dentistas: { nome: string } | null
 }
 
 function fmt(v: number) {
@@ -115,7 +116,7 @@ export default function FinanceiroPage() {
     setLoadingNF(true)
     supabase
       .from('lancamentos')
-      .select('*, pacientes(nome), destinatarios(nome, tipo)')
+      .select('*, pacientes(nome), destinatarios(nome, tipo), dentistas:dentistas!dentista_id(nome)')
       .eq('nota_fiscal', true)
       .is('numero_nf', null)
       .order('data', { ascending: false })
@@ -490,6 +491,9 @@ export default function FinanceiroPage() {
                           )}
                           {l.pacientes && (
                             <><span style={{ color: 'var(--text-3)' }}>Paciente</span><span style={{ color: 'var(--text-1)' }}>{l.pacientes.nome}</span></>
+                          )}
+                          {l.dentistas && (
+                            <><span style={{ color: 'var(--text-3)' }}>Profissional</span><span style={{ color: 'var(--text-1)' }}>{l.dentistas.nome}</span></>
                           )}
                           <><span style={{ color: 'var(--text-3)' }}>Forma</span><span style={{ color: 'var(--text-1)' }}>{l.forma}</span></>
                           <><span style={{ color: 'var(--text-3)' }}>Valor</span><span className="text-receita font-medium">R$ {fmt(l.valor)}</span></>
