@@ -21,12 +21,30 @@ type Lancamento = {
   forma: string
   nota_fiscal: boolean
   numero_nf: string | null
+  paciente_id: string | null
   pacientes: { nome: string } | null
   destinatarios: { nome: string; tipo: string } | null
   categoria: string | null
   observacao: string | null
   dentista_id: string | null
   dentistas: { nome: string } | null
+}
+
+type PacienteFicha = {
+  id: string
+  nome: string
+  telefone: string
+  email: string
+  cpf: string
+  data_nascimento: string
+  observacoes: string
+  cep: string
+  endereco: string
+  numero: string
+  complemento: string
+  bairro: string
+  cidade: string
+  estado: string
 }
 
 function fmt(v: number) {
@@ -82,6 +100,9 @@ export default function FinanceiroPage() {
   const [expandidoNF, setExpandidoNF] = useState<string | null>(null)
   const [numeroNFEdit, setNumeroNFEdit] = useState('')
   const [salvandoNF, setSalvandoNF] = useState(false)
+  const [fichaAberta, setFichaAberta] = useState(false)
+  const [fichaPaciente, setFichaPaciente] = useState<PacienteFicha | null>(null)
+  const [carregandoFicha, setCarregandoFicha] = useState(false)
 
   // notas fiscais emitidas
   const [emitidasNF, setEmitidasNF] = useState<Lancamento[]>([])
@@ -172,6 +193,20 @@ export default function FinanceiroPage() {
     setEditandoNF(null)
     setNumeroNFEdit('')
     setSalvandoNF(false)
+  }
+
+  async function abrirFichaPaciente(id: string) {
+    setFichaAberta(true)
+    setCarregandoFicha(true)
+    setFichaPaciente(null)
+    const { data } = await supabase.from('pacientes').select('*').eq('id', id).single()
+    setFichaPaciente(data ?? null)
+    setCarregandoFicha(false)
+  }
+
+  function fecharFicha() {
+    setFichaAberta(false)
+    setFichaPaciente(null)
   }
 
   // ── Computed — lançamentos ──
@@ -516,10 +551,18 @@ export default function FinanceiroPage() {
                             </button>
                           </div>
                         ) : (
-                          <button onClick={() => { setEditandoNF(l.id); setNumeroNFEdit('') }}
-                            className="btn-primary px-3 py-1.5 text-xs self-start">
-                            Emitir NF
-                          </button>
+                          <div className="flex gap-2">
+                            <button onClick={() => { setEditandoNF(l.id); setNumeroNFEdit('') }}
+                              className="btn-primary px-3 py-1.5 text-xs self-start">
+                              Emitir NF
+                            </button>
+                            {l.paciente_id && (
+                              <button onClick={() => abrirFichaPaciente(l.paciente_id as string)}
+                                className="btn-secondary px-3 py-1.5 text-xs self-start">
+                                Ver ficha do paciente
+                              </button>
+                            )}
+                          </div>
                         )}
                       </div>
                     )}
@@ -572,6 +615,73 @@ export default function FinanceiroPage() {
               ))}
             </div>
           )}
+        </div>
+      )}
+
+      {/* ═══════════════ FICHA DO PACIENTE ═══════════════ */}
+      {fichaAberta && (
+        <div className="modal-overlay" onClick={fecharFicha}>
+          <div className="modal max-w-lg" onClick={e => e.stopPropagation()}>
+            <div className="modal-header">
+              <h3 className="modal-title">Ficha do Paciente</h3>
+              <button onClick={fecharFicha} className="nav-icon hover:text-red-400 transition-colors">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
+              </button>
+            </div>
+
+            {carregandoFicha ? (
+              <p className="page-subtitle">Carregando...</p>
+            ) : !fichaPaciente ? (
+              <p className="page-subtitle">Paciente não encontrado.</p>
+            ) : (
+              <div className="flex flex-col gap-4">
+                <div className="flex items-center gap-3">
+                  <div className={`patient-avatar ${corAvatarD(fichaPaciente.nome)}`}>{iniciaisD(fichaPaciente.nome)}</div>
+                  <p className="text-base font-medium" style={{ color: 'var(--text-1)' }}>{fichaPaciente.nome}</p>
+                </div>
+
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-widest mb-1" style={{ color: 'var(--text-3)' }}>Dados pessoais</p>
+                  <div className="grid grid-cols-2 gap-x-6 gap-y-1 text-xs">
+                    <span style={{ color: 'var(--text-3)' }}>CPF</span>
+                    <span style={{ color: 'var(--text-1)' }}>{fichaPaciente.cpf || '—'}</span>
+                    <span style={{ color: 'var(--text-3)' }}>Nascimento</span>
+                    <span style={{ color: 'var(--text-1)' }}>{fichaPaciente.data_nascimento ? fichaPaciente.data_nascimento.split('-').reverse().join('/') : '—'}</span>
+                    <span style={{ color: 'var(--text-3)' }}>Telefone</span>
+                    <span style={{ color: 'var(--text-1)' }}>{fichaPaciente.telefone || '—'}</span>
+                    <span style={{ color: 'var(--text-3)' }}>E-mail</span>
+                    <span style={{ color: 'var(--text-1)' }}>{fichaPaciente.email || '—'}</span>
+                  </div>
+                </div>
+
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-widest mb-1" style={{ color: 'var(--text-3)' }}>Endereço</p>
+                  <p className="text-xs" style={{ color: 'var(--text-1)' }}>
+                    {fichaPaciente.endereco || fichaPaciente.numero || fichaPaciente.bairro || fichaPaciente.cidade || fichaPaciente.estado || fichaPaciente.cep ? (
+                      <>
+                        {[fichaPaciente.endereco, fichaPaciente.numero].filter(Boolean).join(', ')}
+                        {fichaPaciente.complemento ? ` - ${fichaPaciente.complemento}` : ''}
+                        {fichaPaciente.bairro ? ` · ${fichaPaciente.bairro}` : ''}
+                        {(fichaPaciente.cidade || fichaPaciente.estado) ? ` · ${[fichaPaciente.cidade, fichaPaciente.estado].filter(Boolean).join('/')}` : ''}
+                        {fichaPaciente.cep ? ` · CEP ${fichaPaciente.cep}` : ''}
+                      </>
+                    ) : '—'}
+                  </p>
+                </div>
+
+                {fichaPaciente.observacoes && (
+                  <div>
+                    <p className="text-xs font-semibold uppercase tracking-widest mb-1" style={{ color: 'var(--text-3)' }}>Observações</p>
+                    <p className="text-xs" style={{ color: 'var(--text-1)' }}>{fichaPaciente.observacoes}</p>
+                  </div>
+                )}
+              </div>
+            )}
+
+            <div className="flex gap-2 mt-5">
+              <button onClick={fecharFicha} className="btn-secondary flex-1 py-2">Fechar</button>
+            </div>
+          </div>
         </div>
       )}
     </div>
