@@ -1,9 +1,12 @@
--- Rode este script manualmente no SQL Editor do Supabase antes de publicar o código
--- que passa a ler/escrever na tabela fechamentos_mensais.
+-- Rode este script manualmente no SQL Editor do Supabase (produção) antes de
+-- publicar o código que fecha/reabre o mês (botão "Fechar Mês" na tela de
+-- Fechamento de Mês, aviso "Mês Fechado" na tela do próprio dentista).
 --
--- Trava de fechamento de mês por dentista. Cada linha representa o fechamento
--- (ou reabertura) de um dentista em um mês/ano específico, com o snapshot dos
--- valores calculados no momento do fechamento.
+-- Este arquivo era um rascunho anterior que nunca chegou a ser aplicado;
+-- foi substituído pelo schema real, criado e testado como migration local em
+-- supabase/migrations/20260919000000_fechamentos_mensais.sql. O conteúdo
+-- abaixo é uma cópia exata dessa migration — mantido aqui só porque esse é o
+-- lugar de onde scripts manuais de produção são copiados neste projeto.
 
 create table if not exists fechamentos_mensais (
   id uuid primary key default gen_random_uuid(),
@@ -12,14 +15,10 @@ create table if not exists fechamentos_mensais (
   mes int not null, -- 0-11 (Janeiro = 0), mesma convenção usada no app
   status text not null default 'fechado' check (status in ('fechado', 'reaberto')),
 
-  comissao_pagar numeric(12,2) not null default 0,
-  rateio_despesas_gerais numeric(12,2) not null default 0,
-  despesas_atribuidas numeric(12,2) not null default 0,
-  comissao_a_receber numeric(12,2) not null default 0,
-  participacao_cirurgia numeric(12,2) not null default 0,
-  total_a_pagar_clinica numeric(12,2) not null default 0,
-  valor_pf numeric(12,2) not null default 0,
-  valor_pj numeric(12,2) not null default 0,
+  -- Snapshot em JSON do resultado calculado em lib/fechamentoMensal.ts no
+  -- momento do fechamento (o formato varia por tipo de dentista —
+  -- branchA/marco/diagrama2/diagrama3 — por isso jsonb em vez de colunas fixas).
+  resultado jsonb not null,
 
   fechado_em timestamptz not null default now(),
   fechado_por text,
@@ -30,7 +29,9 @@ create table if not exists fechamentos_mensais (
   unique (dentista_id, ano, mes)
 );
 
--- RLS: ajuste para espelhar o que já está configurado nas outras tabelas do
--- projeto (ex. configuracoes_dentistas). Se as outras tabelas estão com RLS
--- desabilitado, descomente a linha abaixo; se usam policy permissiva, replique-a.
--- alter table fechamentos_mensais disable row level security;
+create index if not exists fechamentos_mensais_dentista_idx on fechamentos_mensais (dentista_id, ano, mes);
+
+-- RLS desabilitado pra espelhar as demais tabelas do projeto (o app não usa
+-- o Auth do Supabase — login é custom via cookie/JWT — e acessa direto com
+-- a anon/service key).
+alter table fechamentos_mensais disable row level security;

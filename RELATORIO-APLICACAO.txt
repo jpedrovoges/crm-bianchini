@@ -1,0 +1,277 @@
+==================================================================
+RELATORIO COMPLETO - CRM BIANCHINI
+Gerado em: 18/09/2026
+==================================================================
+
+Este relatorio descreve tudo que existe hoje na aplicacao: stack
+tecnica, autenticacao, papeis de usuario, paginas, modelo de dados,
+rotas de API, integracoes externas e regras de negocio especificas
+da clinica.
+
+
+------------------------------------------------------------------
+1. STACK TECNICA
+------------------------------------------------------------------
+- Next.js 16.2.4 (App Router)
+- React 19.2.4 / React DOM 19.2.4
+- TypeScript 5
+- Tailwind CSS 4
+- Supabase (@supabase/supabase-js 2.105.3, @supabase/ssr 0.10.2)
+  como banco de dados (Postgres) e client de acesso a dados.
+  Nao usa Supabase Auth - o login e customizado.
+- Nao ha Prisma/Drizzle: todo acesso a dados e via client Supabase
+  (chave anonima no navegador, service role em lib/supabase-admin.ts
+  nas rotas de servidor).
+- bcryptjs (hash de senha), jose (JWT), xlsx (importacao de planilha
+  do convenio Celos), @vercel/analytics e @vercel/speed-insights.
+
+Scripts disponiveis (package.json):
+  dev, build, start, lint, supabase:start, supabase:stop,
+  supabase:status, supabase:reset
+
+
+------------------------------------------------------------------
+2. AUTENTICACAO E SEGURANCA
+------------------------------------------------------------------
+- Login customizado (nao usa Supabase Auth): app/api/auth/login
+  valida usuario/senha (bcrypt) contra a tabela "usuarios" e assina
+  um JWT (lib/auth.ts, biblioteca jose, expira em 7 dias).
+- O token fica em um cookie httpOnly "auth_token". Um segundo
+  cookie legivel pelo navegador, "session_info", guarda dados nao
+  sensiveis (username, role, dentista_id) para uso no client.
+- Nao existe middleware.ts. A protecao de rotas e feita no
+  app/dashboard/layout.tsx (server component), que le o cookie,
+  valida o JWT e redireciona para /login se invalido ou ausente.
+  Cada rota de API sensivel revalida o token individualmente.
+- "force_password_change": um usuario pode ser marcado para ser
+  obrigado a trocar a senha no proximo login
+  (app/dashboard/change-password, app/api/auth/change-password).
+- app/api/setup: rota de bootstrap que cria os usuarios iniciais
+  da clinica (roda uma unica vez, bloqueia se ja existir usuario).
+- Existem dois mecanismos de sessao no client, usados em telas
+  diferentes: app/dashboard/SessionProvider.tsx (Context alimentado
+  pelo layout do servidor) e hooks/useSession.ts (le o cookie
+  session_info direto no navegador).
+
+
+------------------------------------------------------------------
+3. PAPEIS DE USUARIO
+------------------------------------------------------------------
+- ADMIN: acesso total, incluindo /dashboard/admin/usuarios (unico
+  papel que gerencia usuarios: criar, resetar senha, forcar troca,
+  ativar/desativar, vincular a um dentista).
+- GESTOR: mesmo acesso operacional do admin (Dashboard, Financeiro,
+  Movimento Diario, Cadastros), exceto a administracao de usuarios.
+- RECEPCAO: sem acesso a Dashboard/Financeiro (e redirecionada
+  automaticamente para Movimento Diario). Tem acesso a Pacientes e
+  Fornecedores. No Movimento Diario pode operar, mas a edicao
+  completa de um lancamento e desencorajada - o fluxo normal dela e
+  so preencher o numero da nota fiscal.
+- DENTISTA: visao restrita e somente-leitura a propria pagina em
+  /dashboard/financeiro/[dentistaId] (menu lateral mostra so "Minha
+  pagina"). Nao pode excluir lancamentos, criar repasses nem
+  registrar pagamentos.
+
+Duas regras "hard-coded" por nome do dentista, dignas de nota:
+  - So dentistas cujo nome contenha "moises" ou "raissa" permitem
+    que a recepcao preencha o numero da nota fiscal.
+  - So o dentista "moises" permite adiantamento de parcelas.
+
+
+------------------------------------------------------------------
+4. PAGINAS DO DASHBOARD
+------------------------------------------------------------------
+/dashboard
+  Home com indicadores (total de pacientes, lancamentos de hoje,
+  receita do mes, saldo do mes) e os ultimos 6 lancamentos.
+  A recepcao e redirecionada para fora dela.
+
+/dashboard/movimento-diario
+  Tela operacional principal do sistema. Lancar receita/despesa do
+  dia, editar, parcelar, adiantar parcelas, editar numero de NF,
+  excluir todos os lancamentos de um dia, visoes diaria/mensal/
+  anual, e o botao "Enviar relatorio" (WhatsApp) adicionado
+  nesta sessao.
+
+/dashboard/financeiro
+  Cinco abas: Lancamentos (por mes/ano e forma de pagamento),
+  Despesas Comuns, Dentistas (lista com link para a pagina
+  individual de cada um), NF a Fazer (pendentes de numero) e
+  Notas Fiscais (ja emitidas).
+
+/dashboard/financeiro/[dentistaId]
+  Extrato financeiro individual do dentista: receitas por forma de
+  pagamento, repasses enviados/recebidos entre dentistas, despesas
+  atribuidas, pagamentos de comissao e importacao de guias do
+  convenio Celos. E a pagina mais complexa do sistema.
+
+/dashboard/pacientes
+  Cadastro (CRUD) de pacientes, com busca automatica de endereco
+  por CEP (ViaCEP), listagem agrupada por letra inicial do nome.
+
+/dashboard/dentistas
+  Cadastro (CRUD) simples de dentistas (nome, ativo/inativo).
+
+/dashboard/fornecedores
+  Cadastro (CRUD) simples - na pratica grava na tabela
+  "destinatarios" com tipo = "empresa".
+
+/dashboard/admin/usuarios
+  Somente admin. Criar usuario, resetar senha, forcar troca de
+  senha, ativar/desativar, vincular usuario a um dentista.
+
+/dashboard/change-password
+  Troca de senha, voluntaria ou forcada pelo sistema.
+
+/login
+  Tela de login.
+
+/ (app/page.tsx)
+  Apenas redireciona para /dashboard.
+
+
+------------------------------------------------------------------
+5. MODELO DE DADOS (Postgres / Supabase)
+------------------------------------------------------------------
+RLS desabilitado - toda a autorizacao e feita pela aplicacao, nao
+pelo banco.
+
+- dentistas
+  nome, ativo, participa_despesas_comuns
+
+- usuarios
+  username, password_hash, role, dentista_id, force_password_change,
+  active
+
+- pacientes
+  dados pessoais completos + endereco (cep, rua, numero, bairro,
+  cidade, estado)
+
+- destinatarios
+  nome, tipo ("dentista" ou "empresa") - usada tanto para despesas
+  quanto para o cadastro de "fornecedores"
+
+- categorias_despesa_comum / despesas_comuns
+  descricao, valor, dia de vencimento, categoria
+
+- lancamentos (tabela central do sistema)
+  data, tipo (receita/despesa), descricao, valor, forma de
+  pagamento, vinculo com paciente, destinatario, dentista e
+  dentista_responsavel, nota_fiscal (bool), numero_nf, categoria
+  (venda/procedimento), observacao
+
+- pagamentos_dentistas
+  registro de acerto de comissao pago a um dentista
+
+- repasses
+  percentual/valor de um lancamento de um dentista repassado a
+  outro dentista
+
+OBSERVACAO - feature em andamento, ainda nao finalizada:
+Existe um script manual "sql/2026-08-05_fechamentos_mensais.sql"
+que cria uma tabela de "trava de fechamento de mes por dentista"
+(com snapshot de comissao/rateio/PF-PJ), mas ele nao esta
+referenciado em nenhum lugar do codigo da aplicacao (app/). Isso,
+somado a um branch "fechamento-mes-rateio" que aparece removido no
+git status, indica uma funcionalidade de fechamento mensal que
+comecou a ser desenvolvida mas ainda nao foi concluida nem
+publicada.
+
+
+------------------------------------------------------------------
+6. ROTAS DE API
+------------------------------------------------------------------
+- app/api/auth/login            (POST)  login
+- app/api/auth/logout           (POST)  logout
+- app/api/auth/change-password  (POST)  troca de senha
+- app/api/admin/usuarios   (GET/POST/PATCH)  gestao de usuarios,
+                                              somente admin
+- app/api/setup                 (GET)   bootstrap unico dos
+                                          usuarios iniciais
+- app/api/cron/relatorio-diario (GET)   dispara o relatorio diario
+                                          via WhatsApp, protegida
+                                          por CRON_SECRET
+- app/api/relatorio-diario/enviar (POST) envio manual do relatorio
+                                           diario, somente admin/
+                                           gestor
+
+
+------------------------------------------------------------------
+7. INTEGRACOES EXTERNAS
+------------------------------------------------------------------
+- Supabase: banco de dados (Postgres) e client de acesso a dados.
+- ViaCEP: busca de endereco por CEP na ficha do paciente (chamada
+  direto do navegador).
+- Vercel Analytics + Speed Insights: metricas de uso e performance
+  (plugadas em app/layout.tsx).
+- WhatsApp Cloud API (Meta, oficial) - IMPLEMENTADA NESTA SESSAO:
+  envia o total de entradas (receitas) do dia para numeros
+  individuais via um template de mensagem aprovado pela Meta.
+  Disparo automatico de segunda a sexta as 19h (horario de
+  Brasilia) via cron da Vercel, ou manualmente pelo botao "Enviar
+  relatorio" na tela de Movimento Diario (visivel para admin e
+  gestor). Arquivos: lib/whatsapp-cloud.ts, lib/relatorio-diario.ts,
+  app/api/cron/relatorio-diario, app/api/relatorio-diario/enviar,
+  vercel.json.
+  Configuracao ainda PENDENTE do lado do usuario: token de acesso
+  permanente da Meta, phone number id, nome do template aprovado e
+  lista de numeros destinatarios (variaveis de ambiente
+  WHATSAPP_TOKEN, WHATSAPP_PHONE_NUMBER_ID, WHATSAPP_TEMPLATE_NAME,
+  WHATSAPP_DESTINATARIOS, CRON_SECRET).
+
+
+------------------------------------------------------------------
+8. REGRAS DE NEGOCIO ESPECIFICAS DA CLINICA
+------------------------------------------------------------------
+- Imposto de NF fixo de 11,33% (lib/financeiro.ts) descontado de
+  guias de convenio (Celos, Elo Saude) antes de calcular comissao
+  e repasse.
+- Data efetiva de recebimento (so na pagina financeiro/
+  [dentistaId]): pagamento em cartao de credito so "cai" 30 dias
+  corridos depois; cartao de debito cai no proximo dia util; as
+  demais formas caem no mesmo dia. O Movimento Diario continua
+  mostrando a data original do lancamento.
+- Repasses entre dentistas: um lancamento de um dentista pode ser
+  parcialmente repassado (em %) a outro dentista. Para a forma
+  "Elo Saude", a base do repasse ja sai liquida do imposto de NF.
+- Despesas comuns: rateadas igualmente entre os dentistas marcados
+  como participantes. Despesas avulsas lancadas no Movimento Diario
+  sem dentista vinculado tambem entram no rateio. Existe um botao
+  "Fechar Mes" que gera lancamentos de despesa individuais por
+  dentista.
+- Adiantamento de parcelas: disponivel somente para vendas
+  parceladas do dentista "Jose Moises" - permite quitar de uma vez
+  o restante das parcelas.
+- Importacao Celos: le uma planilha .xlsx, identifica as colunas
+  "Beneficiario" e "Valor Total", aplica o imposto de NF fixo mais
+  um desconto configuravel por importacao. Quando ha desconto, gera
+  automaticamente um lancamento de "Comissao Celos" para o dentista
+  Marco Bianchini (identificado pelo nome).
+- Fluxo de nota fiscal: um lancamento marcado com nota_fiscal=true
+  e sem numero_nf preenchido aparece automaticamente na aba "NF a
+  Fazer". So dentistas com nome contendo "moises" ou "raissa"
+  permitem que a recepcao preencha esse numero diretamente.
+- Relatorio diario via WhatsApp (novo): soma o valor de todos os
+  lancamentos do tipo "receita" no dia e envia o total formatado
+  via template da API oficial do WhatsApp.
+
+
+------------------------------------------------------------------
+9. PONTOS DE ATENCAO / EM ABERTO
+------------------------------------------------------------------
+- Feature de "fechamento mensal por dentista" parece iniciada
+  (script SQL solto + branch removido) mas nao concluida nem ligada
+  ao restante do sistema.
+- Dois mecanismos de sessao no client que nao foram unificados
+  (SessionProvider via Context e useSession via cookie), usados em
+  telas diferentes.
+- RLS desligado no Supabase - toda a seguranca de acesso a dados
+  depende exclusivamente da aplicacao (rotas de API e paginas),
+  nao do banco.
+- O envio de relatorio diario por WhatsApp esta com o codigo pronto
+  mas precisa das credenciais da Meta (token, phone number id,
+  template aprovado e numeros destinatarios) para funcionar.
+
+==================================================================
+Fim do relatorio.
+==================================================================

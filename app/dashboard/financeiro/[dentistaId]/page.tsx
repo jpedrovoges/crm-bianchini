@@ -7,6 +7,8 @@ import { supabase } from '@/lib/supabase'
 import ImportarCelos from './ImportarCelos'
 import { useSession } from '@/app/dashboard/SessionProvider'
 import { IMPOSTO_NF_PCT } from '@/lib/financeiro'
+import { buscarFechamento, type FechamentoRegistro } from '@/lib/fechamentoMensal'
+import FechamentoBreakdown from './FechamentoBreakdown'
 
 const MESES = ['Janeiro','Fevereiro','Março','Abril','Maio','Junho','Julho','Agosto','Setembro','Outubro','Novembro','Dezembro']
 const FORMAS = ['Pix', 'Dinheiro', 'Cartão Crédito', 'Cartão Débito', 'Convênio', 'Rateio', 'Desconto']
@@ -152,6 +154,16 @@ export default function DentistaFinanceiroPage() {
 
   // Despesas do movimento diário atribuídas a este dentista
   const [despesasResponsavel, setDespesasResponsavel] = useState<DespesaResponsavel[]>([])
+
+  // Fechamento do mês (aviso pro dentista quando o admin/gestor já fechou)
+  const [fechamento, setFechamento] = useState<FechamentoRegistro | null>(null)
+  const [verFechamento, setVerFechamento] = useState(false)
+
+  useEffect(() => {
+    if (periodo !== 'mes') { setFechamento(null); return }
+    setVerFechamento(false)
+    buscarFechamento(dentistaId, mes, ano).then(setFechamento).catch(() => setFechamento(null))
+  }, [dentistaId, mes, ano, periodo])
 
   useEffect(() => {
     supabase.from('dentistas').select('nome').eq('id', dentistaId).single()
@@ -342,18 +354,48 @@ export default function DentistaFinanceiroPage() {
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M15 18l-6-6 6-6"/></svg>
           Financeiro
         </Link>
-        <div className="flex items-center gap-3">
-          {dentistaNome && (
-            <div className={`w-9 h-9 rounded-full flex items-center justify-center text-sm font-semibold flex-shrink-0 ${corAvatar(dentistaNome)}`}>
-              {iniciais(dentistaNome)}
+        <div className="flex items-center justify-between gap-3 flex-wrap">
+          <div className="flex items-center gap-3">
+            {dentistaNome && (
+              <div className={`w-9 h-9 rounded-full flex items-center justify-center text-sm font-semibold flex-shrink-0 ${corAvatar(dentistaNome)}`}>
+                {iniciais(dentistaNome)}
+              </div>
+            )}
+            <div>
+              <h1 className="page-title">{dentistaNome ?? '...'}</h1>
+              <p className="page-subtitle">Movimento financeiro</p>
             </div>
-          )}
-          <div>
-            <h1 className="page-title">{dentistaNome ?? '...'}</h1>
-            <p className="page-subtitle">Movimento financeiro</p>
           </div>
+          {podeEditar && (
+            <Link href={`/dashboard/financeiro/${dentistaId}/fechamento`} className="btn-secondary px-3 py-1.5 text-sm">
+              Fechamento de Mês
+            </Link>
+          )}
         </div>
       </div>
+
+      {/* ── Aviso de mês fechado ── */}
+      {fechamento?.status === 'fechado' && (
+        <div className="card-p5 mb-6" style={{ borderColor: 'rgb(234 179 8 / 0.4)', backgroundColor: 'rgb(234 179 8 / 0.08)' }}>
+          <div className="flex items-center justify-between flex-wrap gap-3">
+            <div>
+              <p className="text-sm font-semibold" style={{ color: 'rgb(250 204 21)' }}>Mês Fechado — valores a acertar</p>
+              <p className="text-xs mt-1" style={{ color: 'var(--text-3)' }}>
+                {MESES[fechamento.mes]} {fechamento.ano} já foi fechado{fechamento.fechadoPor ? ` por ${fechamento.fechadoPor}` : ''}.
+                Os valores abaixo são o que entrou e o que falta acertar nesse mês.
+              </p>
+            </div>
+            <button onClick={() => setVerFechamento(v => !v)} className="btn-secondary px-3 py-1.5 text-xs flex-shrink-0">
+              {verFechamento ? 'Ocultar' : 'Ver detalhes'}
+            </button>
+          </div>
+          {verFechamento && (
+            <div className="mt-5">
+              <FechamentoBreakdown resultado={fechamento.resultado} />
+            </div>
+          )}
+        </div>
+      )}
 
       {/* ── Controles de período ── */}
       <div className="flex items-center justify-between mb-6 flex-wrap gap-3">

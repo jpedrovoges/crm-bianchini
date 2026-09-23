@@ -66,6 +66,7 @@ export default function LoginPage() {
               type="submit"
               disabled={!username || !password || loading}
               className="btn-primary py-2.5 w-full mt-1"
+              suppressHydrationWarning
             >
               {loading ? 'Entrando...' : 'Entrar'}
             </button>

@@ -99,6 +99,39 @@ export default function MovimentoDiarioPage() {
   const [salvando, setSalvando] = useState(false)
   const [erro, setErro]       = useState<string | null>(null)
 
+  // relatório diário — monta o texto do dia selecionado e copia pra área de
+  // transferência, pra colar manualmente no WhatsApp (ou onde quiser).
+  const [msgRelatorio, setMsgRelatorio] = useState<string | null>(null)
+
+  function montarTextoRelatorio(): string {
+    const dataFormatada = new Date(`${toISO(ano, mes, diaSelecionado ?? hoje.getDate())}T00:00:00`).toLocaleDateString('pt-BR')
+    const receitas = lancamentosDia.filter(l => l.tipo === 'receita')
+
+    const linhas = receitas.map(l => {
+      const dentista = l.dentistas?.nome ?? '—'
+      const quem = l.pacientes?.nome ?? l.descricao
+      return `- ${dentista} - ${quem} (${l.forma}): R$ ${fmt(l.valor)}`
+    })
+
+    return [
+      `Relatório diário — ${dataFormatada}`,
+      '',
+      ...(linhas.length > 0 ? linhas : ['Nenhuma receita lançada.']),
+      '',
+      `Total de receitas do dia: R$ ${fmt(recDia)}`,
+    ].join('\n')
+  }
+
+  async function copiarRelatorio() {
+    setMsgRelatorio(null)
+    try {
+      await navigator.clipboard.writeText(montarTextoRelatorio())
+      setMsgRelatorio('Relatório copiado! Já pode colar no WhatsApp.')
+    } catch {
+      setMsgRelatorio('Não consegui copiar — copie manualmente.')
+    }
+  }
+
   // modal novo paciente
   const [modalPaciente, setModalPaciente]   = useState(false)
   const [formPaciente, setFormPaciente]     = useState(formPacienteVazio)
@@ -190,7 +223,7 @@ export default function MovimentoDiarioPage() {
   useEffect(() => {
     if (visao !== 'diario' || !diaSelecionado) return
     supabase.from('lancamentos')
-      .select('*, pacientes(nome), destinatarios(nome, tipo), dentistas_responsavel:dentistas!dentista_responsavel_id(nome)')
+      .select('*, pacientes(nome), destinatarios(nome, tipo), dentistas!dentista_id(nome), dentistas_responsavel:dentistas!dentista_responsavel_id(nome)')
       .eq('data', toISO(ano, mes, diaSelecionado))
       .order('created_at')
       .then(({ data }) => { if (data) setLancamentosDia(data as Lancamento[]) })
@@ -202,7 +235,7 @@ export default function MovimentoDiarioPage() {
     const inicio = toISO(ano, mes, 1)
     const fim    = toISO(ano, mes, new Date(ano, mes + 1, 0).getDate())
     supabase.from('lancamentos')
-      .select('*, pacientes(nome), destinatarios(nome, tipo), dentistas_responsavel:dentistas!dentista_responsavel_id(nome)')
+      .select('*, pacientes(nome), destinatarios(nome, tipo), dentistas!dentista_id(nome), dentistas_responsavel:dentistas!dentista_responsavel_id(nome)')
       .gte('data', inicio).lte('data', fim)
       .order('data').order('created_at')
       .then(({ data }) => { if (data) setLancamentosMes(data as Lancamento[]) })
@@ -435,7 +468,7 @@ export default function MovimentoDiarioPage() {
 
       const dataHoje = toISO(ano, mes, diaSelecionado)
       const { data: atualizado } = await supabase.from('lancamentos')
-        .select('*, pacientes(nome), destinatarios(nome, tipo), dentistas_responsavel:dentistas!dentista_responsavel_id(nome)')
+        .select('*, pacientes(nome), destinatarios(nome, tipo), dentistas!dentista_id(nome), dentistas_responsavel:dentistas!dentista_responsavel_id(nome)')
         .eq('data', dataHoje).order('created_at')
       if (atualizado) setLancamentosDia(atualizado as Lancamento[])
       setEditandoId(null); setEditandoLancamento(null); setForm(formVazio); setBuscaPaciente(''); setSalvando(false); setModal(false)
@@ -478,7 +511,7 @@ export default function MovimentoDiarioPage() {
 
     const dataHoje = toISO(ano, mes, diaSelecionado)
     const { data: novo } = await supabase.from('lancamentos')
-      .select('*, pacientes(nome), destinatarios(nome, tipo), dentistas_responsavel:dentistas!dentista_responsavel_id(nome)')
+      .select('*, pacientes(nome), destinatarios(nome, tipo), dentistas!dentista_id(nome), dentistas_responsavel:dentistas!dentista_responsavel_id(nome)')
       .eq('data', dataHoje).order('created_at')
     if (novo) setLancamentosDia(novo as Lancamento[])
 
@@ -782,9 +815,19 @@ export default function MovimentoDiarioPage() {
                         </button>
                       </div>
                     )}
+                    {podeEditarAdmin && (
+                      <button
+                        onClick={copiarRelatorio}
+                        className="btn-secondary px-3 py-1.5"
+                        title="Copiar relatório do dia pra colar no WhatsApp"
+                      >
+                        Copiar relatório
+                      </button>
+                    )}
                     <button onClick={() => { setErro(null); setForm(formVazio); setEditandoLancamento(null); setBuscaPaciente(''); setMostrarPacientes(false); setConfirmarLimparDia(false); setModal(true) }} className="btn-primary px-3 py-1.5">+ Adicionar</button>
                   </div>
                 </div>
+                {msgRelatorio && <p className="card-sub text-xs mb-2">{msgRelatorio}</p>}
                 {lancamentosDia.length > 0 && <SummaryCards rec={recDia} desp={despDia} />}
                 {lancamentosDia.length === 0
                   ? <p className="card-sub text-center py-10">Nenhuma movimentação neste dia</p>
@@ -795,7 +838,7 @@ export default function MovimentoDiarioPage() {
                         onConfirmar={() => setConfirmandoId(l.id)}
                         onCancelar={() => setConfirmandoId(null)}
                         onEditar={podeEditar ? () => abrirEdicao(l) : undefined}
-                        onEditarNF={!podeEditarAdmin && session?.role === 'recepcao' && l.tipo === 'receita' && l.nota_fiscal && dentistaEmiteNF(l.dentista_id) ? () => abrirEdicaoNF(l) : undefined}
+                        onEditarNF={(session?.role === 'recepcao' || podeEditarAdmin) && l.tipo === 'receita' && l.nota_fiscal && dentistaEmiteNF(l.dentista_id) ? () => abrirEdicaoNF(l) : undefined}
                         onAdiantar={podeAdiantar(l) && !adiantando ? () => setConfirmandoAdiantarId(l.id) : undefined}
                         confirmandoAdiantar={confirmandoAdiantarId === l.id}
                         onConfirmarAdiantar={() => adiantarParcelas(l, 'dia')}
@@ -844,7 +887,7 @@ export default function MovimentoDiarioPage() {
                           onConfirmar={() => setConfirmandoId(l.id)}
                           onCancelar={() => setConfirmandoId(null)}
                           onEditar={podeEditar ? () => abrirEdicao(l) : undefined}
-                          onEditarNF={!podeEditarAdmin && session?.role === 'recepcao' && l.tipo === 'receita' && l.nota_fiscal && dentistaEmiteNF(l.dentista_id) ? () => abrirEdicaoNF(l) : undefined}
+                          onEditarNF={(session?.role === 'recepcao' || podeEditarAdmin) && l.tipo === 'receita' && l.nota_fiscal && dentistaEmiteNF(l.dentista_id) ? () => abrirEdicaoNF(l) : undefined}
                           onAdiantar={podeAdiantar(l) && !adiantando ? () => setConfirmandoAdiantarId(l.id) : undefined}
                           confirmandoAdiantar={confirmandoAdiantarId === l.id}
                           onConfirmarAdiantar={() => adiantarParcelas(l, 'mes')}
