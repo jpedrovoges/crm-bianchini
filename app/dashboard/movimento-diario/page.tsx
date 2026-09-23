@@ -815,7 +815,7 @@ export default function MovimentoDiarioPage() {
                         </button>
                       </div>
                     )}
-                    {podeEditarAdmin && (
+                    {podeEditar && (
                       <button
                         onClick={copiarRelatorio}
                         className="btn-secondary px-3 py-1.5"
