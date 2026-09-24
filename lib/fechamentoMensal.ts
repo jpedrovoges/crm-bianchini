@@ -23,6 +23,7 @@ export type LancamentoCalc = {
   paciente_id: string | null
   dentista_id: string | null
   dentista_responsavel_id: string | null
+  data_efetiva: string | null
 }
 
 export type RepasseCalc = {
@@ -67,7 +68,10 @@ function proximoDiaUtil(dataISO: string): string {
   return d
 }
 
-export function dataEfetiva(l: { data: string; forma: string }): string {
+export function dataEfetiva(l: { data: string; forma: string; data_efetiva?: string | null }): string {
+  // Sobrescrita manual (admin/gestor) tem prioridade sobre a regra automática
+  // — usada quando um dentista específico recebe fora do padrão do cartão.
+  if (l.data_efetiva) return l.data_efetiva
   if (l.forma === 'Cartão Crédito') return addDias(l.data, 30)
   if (l.forma === 'Cartão Débito') return proximoDiaUtil(l.data)
   return l.data
@@ -372,16 +376,17 @@ export async function calcularFechamentoMensal(dentistaId: string, mes: number, 
   if (!dentista) throw new Error('Dentista não encontrado ou inativo')
 
   // Janela alargada: dataEfetiva() pode empurrar um lançamento de cartão de
-  // crédito ~30 dias pra frente, então buscamos por data bruta numa faixa
-  // maior e filtramos pela data efetiva em memória.
+  // crédito ~30 dias pra frente (ou mais, se houver sobrescrita manual de
+  // data_efetiva), então buscamos por data bruta numa faixa maior e
+  // filtramos pela data efetiva em memória.
   const inicioMes   = toISO(ano, mes, 1)
   const fimMes      = toISO(ano, mes, new Date(ano, mes + 1, 0).getDate())
-  const inicioBusca = addDias(inicioMes, -35)
-  const fimBusca     = addDias(fimMes, 35)
+  const inicioBusca = addDias(inicioMes, -62)
+  const fimBusca     = addDias(fimMes, 62)
 
   const { data: lancamentosData, error: errLanc } = await supabase
     .from('lancamentos')
-    .select('id, data, tipo, descricao, valor, forma, paciente_id, dentista_id, dentista_responsavel_id')
+    .select('id, data, tipo, descricao, valor, forma, paciente_id, dentista_id, dentista_responsavel_id, data_efetiva')
     .gte('data', inicioBusca)
     .lte('data', fimBusca)
   if (errLanc) throw new Error(errLanc.message)
