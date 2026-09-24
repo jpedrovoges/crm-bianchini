@@ -28,6 +28,7 @@ type Lancamento = {
   observacao: string | null
   dentista_id: string | null
   dentistas: { nome: string } | null
+  created_at: string
 }
 
 type PacienteFicha = {
@@ -53,6 +54,31 @@ function fmt(v: number) {
 
 function toISO(ano: number, mes: number, dia: number) {
   return `${ano}-${String(mes + 1).padStart(2, '0')}-${String(dia).padStart(2, '0')}`
+}
+
+// Venda parcelada: só a 1ª parcela carrega nota_fiscal=true (ver
+// movimento-diario/page.tsx), mas a NF é emitida pelo valor total do
+// procedimento, não pela parcela isolada. As parcelas-irmãs são achadas pelo
+// `created_at` — todo o lote de parcelas de uma venda é inserido num único
+// INSERT, então todas saem com o mesmíssimo timestamp (até o microssegundo).
+// Isso não depende do texto da descrição, que pode ser editado depois (ex.:
+// trocar "Procedimento (1/6)" pelo nome do paciente) sem quebrar o vínculo.
+type NfItem = Lancamento & { valorTotal: number; idsIrmaos: string[] }
+
+async function comValorTotalEIrmaos(l: Lancamento): Promise<NfItem> {
+  const { data: candidatos } = await supabase
+    .from('lancamentos')
+    .select('id, valor')
+    .eq('tipo', l.tipo)
+    .eq('created_at', l.created_at)
+  const irmas = (candidatos ?? []).filter(c => c.id !== l.id)
+  if (irmas.length === 0) return { ...l, valorTotal: l.valor, idsIrmaos: [] }
+
+  return {
+    ...l,
+    valorTotal: l.valor + irmas.reduce((s, c) => s + Number(c.valor), 0),
+    idsIrmaos: irmas.map(c => c.id),
+  }
 }
 
 const ABAS: { key: AbaFinanceiro; label: string }[] = [
@@ -94,7 +120,7 @@ export default function FinanceiroPage() {
   const [loading, setLoading] = useState(true)
 
   // NF a fazer
-  const [pendentesNF, setPendentesNF] = useState<Lancamento[]>([])
+  const [pendentesNF, setPendentesNF] = useState<NfItem[]>([])
   const [loadingNF, setLoadingNF] = useState(false)
   const [editandoNF, setEditandoNF] = useState<string | null>(null)
   const [expandidoNF, setExpandidoNF] = useState<string | null>(null)
@@ -105,7 +131,7 @@ export default function FinanceiroPage() {
   const [carregandoFicha, setCarregandoFicha] = useState(false)
 
   // notas fiscais emitidas
-  const [emitidasNF, setEmitidasNF] = useState<Lancamento[]>([])
+  const [emitidasNF, setEmitidasNF] = useState<NfItem[]>([])
   const [loadingEmitidas, setLoadingEmitidas] = useState(false)
 
   // dentistas
@@ -141,8 +167,8 @@ export default function FinanceiroPage() {
       .eq('nota_fiscal', true)
       .is('numero_nf', null)
       .order('data', { ascending: false })
-      .then(({ data }) => {
-        if (data) setPendentesNF(data as Lancamento[])
+      .then(async ({ data }) => {
+        if (data) setPendentesNF(await Promise.all((data as Lancamento[]).map(comValorTotalEIrmaos)))
         setLoadingNF(false)
       })
   }, [aba])
@@ -164,8 +190,8 @@ export default function FinanceiroPage() {
       .eq('nota_fiscal', true)
       .not('numero_nf', 'is', null)
       .order('data', { ascending: false })
-      .then(({ data }) => {
-        if (data) setEmitidasNF(data as Lancamento[])
+      .then(async ({ data }) => {
+        if (data) setEmitidasNF(await Promise.all((data as Lancamento[]).map(comValorTotalEIrmaos)))
         setLoadingEmitidas(false)
       })
   }, [aba])
@@ -180,15 +206,21 @@ export default function FinanceiroPage() {
   async function emitirNF(id: string) {
     if (!numeroNFEdit.trim()) return
     setSalvandoNF(true)
+    const numero = numeroNFEdit.trim()
+    const item = pendentesNF.find(l => l.id === id)
     const { error } = await supabase
       .from('lancamentos')
-      .update({ numero_nf: numeroNFEdit.trim() })
+      .update({ numero_nf: numero })
       .eq('id', id)
     if (error) { setSalvandoNF(false); return }
-    const item = pendentesNF.find(l => l.id === id)
+    // Venda parcelada: replica o mesmo número de NF pras demais parcelas —
+    // a nota é uma só pro procedimento inteiro (mesmo padrão do Movimento Diário).
+    if (item?.idsIrmaos.length) {
+      await supabase.from('lancamentos').update({ numero_nf: numero }).in('id', item.idsIrmaos)
+    }
     if (item) {
       setPendentesNF(prev => prev.filter(l => l.id !== id))
-      setEmitidasNF(prev => [{ ...item, numero_nf: numeroNFEdit.trim() }, ...prev])
+      setEmitidasNF(prev => [{ ...item, numero_nf: numero }, ...prev])
     }
     setEditandoNF(null)
     setNumeroNFEdit('')
@@ -511,7 +543,7 @@ export default function FinanceiroPage() {
                           {` · ${l.forma}`}
                         </p>
                       </div>
-                      <p className="text-sm font-medium text-receita flex-shrink-0">R$ {fmt(l.valor)}</p>
+                      <p className="text-sm font-medium text-receita flex-shrink-0">R$ {fmt(l.valorTotal)}</p>
                       <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
                         className={`nav-icon flex-shrink-0 transition-transform ${expandido ? 'rotate-180' : ''}`}>
                         <path d="M6 9l6 6 6-6"/>
@@ -531,7 +563,13 @@ export default function FinanceiroPage() {
                             <><span style={{ color: 'var(--text-3)' }}>Profissional</span><span style={{ color: 'var(--text-1)' }}>{l.dentistas.nome}</span></>
                           )}
                           <><span style={{ color: 'var(--text-3)' }}>Forma</span><span style={{ color: 'var(--text-1)' }}>{l.forma}</span></>
-                          <><span style={{ color: 'var(--text-3)' }}>Valor</span><span className="text-receita font-medium">R$ {fmt(l.valor)}</span></>
+                          <>
+                            <span style={{ color: 'var(--text-3)' }}>Valor</span>
+                            <span className="text-receita font-medium">
+                              R$ {fmt(l.valorTotal)}
+                              {l.idsIrmaos.length > 0 && ` (total — ${l.idsIrmaos.length + 1}x)`}
+                            </span>
+                          </>
                           {l.observacao && (
                             <><span style={{ color: 'var(--text-3)' }}>Procedimento</span><span style={{ color: 'var(--text-1)' }}>{l.observacao}</span></>
                           )}
@@ -609,7 +647,7 @@ export default function FinanceiroPage() {
                     </p>
                   </div>
                   <p className="text-sm font-medium text-receita flex-shrink-0">
-                    R$ {fmt(l.valor)}
+                    R$ {fmt(l.valorTotal)}
                   </p>
                 </div>
               ))}
