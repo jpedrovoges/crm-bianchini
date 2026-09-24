@@ -30,6 +30,7 @@ type Lancamento = {
   numero_nf: string | null
   categoria: string | null
   observacao: string | null
+  data_efetiva: string | null
 }
 
 type Paciente     = { id: string; nome: string }
@@ -59,6 +60,33 @@ const formPacienteVazio = {
 
 function toISO(ano: number, mes: number, dia: number) {
   return `${ano}-${String(mes + 1).padStart(2, '0')}-${String(dia).padStart(2, '0')}`
+}
+
+function addDias(dataISO: string, dias: number): string {
+  const [ano, mes, dia] = dataISO.split('-').map(Number)
+  const d = new Date(ano, mes - 1, dia + dias)
+  return toISO(d.getFullYear(), d.getMonth(), d.getDate())
+}
+
+function diaSemana(dataISO: string): number {
+  const [ano, mes, dia] = dataISO.split('-').map(Number)
+  return new Date(ano, mes - 1, dia).getDay()
+}
+
+function proximoDiaUtil(dataISO: string): string {
+  let d = addDias(dataISO, 1)
+  while (diaSemana(d) === 0 || diaSemana(d) === 6) d = addDias(d, 1)
+  return d
+}
+
+// Mesma regra de financeiro/[dentistaId]/page.tsx e lib/fechamentoMensal.ts —
+// usada só como valor padrão ao abrir o editor de data de referência (o
+// Movimento Diário em si continua mostrando a data bruta do lançamento).
+function dataEfetivaPadrao(l: { data: string; forma: string; data_efetiva: string | null }): string {
+  if (l.data_efetiva) return l.data_efetiva
+  if (l.forma === 'Cartão Crédito') return addDias(l.data, 30)
+  if (l.forma === 'Cartão Débito') return proximoDiaUtil(l.data)
+  return l.data
 }
 
 function fmt(v: number) {
@@ -159,6 +187,13 @@ export default function MovimentoDiarioPage() {
   const [formNF, setFormNF]                             = useState('')
   const [salvandoNF, setSalvandoNF]                     = useState(false)
   const [valorProcedimentoNF, setValorProcedimentoNF]   = useState<number | null>(null)
+
+  // sobrescrita manual da data de referência (admin/gestor) — em qual mês o
+  // pagamento conta pro dentista, independente da regra automática de forma.
+  const [editandoDataEfId, setEditandoDataEfId]                 = useState<string | null>(null)
+  const [editandoDataEfLancamento, setEditandoDataEfLancamento] = useState<Lancamento | null>(null)
+  const [formDataEf, setFormDataEf]                             = useState('')
+  const [salvandoDataEf, setSalvandoDataEf]                     = useState(false)
 
   // adiantamento de parcelas (recepção e admin/gestor, só dentista José Moisés)
   const [confirmandoAdiantarId, setConfirmandoAdiantarId] = useState<string | null>(null)
@@ -388,6 +423,32 @@ export default function MovimentoDiarioPage() {
     setLancamentosDia(prev => prev.map(l => idsAtualizados.includes(l.id) ? { ...l, numero_nf: numero } : l))
     setLancamentosMes(prev => prev.map(l => idsAtualizados.includes(l.id) ? { ...l, numero_nf: numero } : l))
     setSalvandoNF(false); setEditandoNFId(null); setEditandoNFLancamento(null); setFormNF(''); setValorProcedimentoNF(null)
+  }
+
+  function abrirEdicaoDataEf(l: Lancamento) {
+    setEditandoDataEfId(l.id)
+    setEditandoDataEfLancamento(l)
+    setFormDataEf(dataEfetivaPadrao(l))
+  }
+
+  async function salvarDataEf() {
+    if (!editandoDataEfId || !formDataEf) return
+    setSalvandoDataEf(true)
+    const { error } = await supabase.from('lancamentos').update({ data_efetiva: formDataEf }).eq('id', editandoDataEfId)
+    if (error) { setErro(error.message); setSalvandoDataEf(false); return }
+    setLancamentosDia(prev => prev.map(l => l.id === editandoDataEfId ? { ...l, data_efetiva: formDataEf } : l))
+    setLancamentosMes(prev => prev.map(l => l.id === editandoDataEfId ? { ...l, data_efetiva: formDataEf } : l))
+    setSalvandoDataEf(false); setEditandoDataEfId(null); setEditandoDataEfLancamento(null); setFormDataEf('')
+  }
+
+  async function resetarDataEf() {
+    if (!editandoDataEfId) return
+    setSalvandoDataEf(true)
+    const { error } = await supabase.from('lancamentos').update({ data_efetiva: null }).eq('id', editandoDataEfId)
+    if (error) { setErro(error.message); setSalvandoDataEf(false); return }
+    setLancamentosDia(prev => prev.map(l => l.id === editandoDataEfId ? { ...l, data_efetiva: null } : l))
+    setLancamentosMes(prev => prev.map(l => l.id === editandoDataEfId ? { ...l, data_efetiva: null } : l))
+    setSalvandoDataEf(false); setEditandoDataEfId(null); setEditandoDataEfLancamento(null); setFormDataEf('')
   }
 
   // Puxa o valor de todas as parcelas futuras da mesma venda parcelada (mesmo
@@ -620,7 +681,7 @@ export default function MovimentoDiarioPage() {
     )
   }
 
-  function LancamentoRow({ l, onRemove, confirmando, onConfirmar, onCancelar, onEditar, onEditarNF, onAdiantar, confirmandoAdiantar, onConfirmarAdiantar, onCancelarAdiantar }: {
+  function LancamentoRow({ l, onRemove, confirmando, onConfirmar, onCancelar, onEditar, onEditarNF, onEditarData, onAdiantar, confirmandoAdiantar, onConfirmarAdiantar, onCancelarAdiantar }: {
     l: Lancamento
     onRemove?: () => void
     confirmando?: boolean
@@ -628,6 +689,7 @@ export default function MovimentoDiarioPage() {
     onCancelar?: () => void
     onEditar?: () => void
     onEditarNF?: () => void
+    onEditarData?: () => void
     onAdiantar?: () => void
     confirmandoAdiantar?: boolean
     onConfirmarAdiantar?: () => void
@@ -682,6 +744,13 @@ export default function MovimentoDiarioPage() {
         {onEditarNF && !confirmando && !confirmandoAdiantar && (
           <button onClick={onEditarNF} className="nav-icon hover:text-[var(--text-1)] transition-colors flex-shrink-0 text-xs font-semibold" title="Preencher número da NF">
             NF
+          </button>
+        )}
+        {onEditarData && !confirmando && !confirmandoAdiantar && (
+          <button onClick={onEditarData} className="nav-icon hover:text-[var(--text-1)] transition-colors flex-shrink-0" title="Mudar mês de referência (data efetiva)">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <rect x="3" y="4" width="18" height="18" rx="2"/><path d="M3 9h18M8 2v4M16 2v4"/>
+            </svg>
           </button>
         )}
         {onEditar && !confirmando && !confirmandoAdiantar && (
@@ -839,6 +908,7 @@ export default function MovimentoDiarioPage() {
                         onCancelar={() => setConfirmandoId(null)}
                         onEditar={podeEditar ? () => abrirEdicao(l) : undefined}
                         onEditarNF={(session?.role === 'recepcao' || podeEditarAdmin) && l.tipo === 'receita' && l.nota_fiscal && dentistaEmiteNF(l.dentista_id) ? () => abrirEdicaoNF(l) : undefined}
+                        onEditarData={podeEditarAdmin ? () => abrirEdicaoDataEf(l) : undefined}
                         onAdiantar={podeAdiantar(l) && !adiantando ? () => setConfirmandoAdiantarId(l.id) : undefined}
                         confirmandoAdiantar={confirmandoAdiantarId === l.id}
                         onConfirmarAdiantar={() => adiantarParcelas(l, 'dia')}
@@ -888,6 +958,7 @@ export default function MovimentoDiarioPage() {
                           onCancelar={() => setConfirmandoId(null)}
                           onEditar={podeEditar ? () => abrirEdicao(l) : undefined}
                           onEditarNF={(session?.role === 'recepcao' || podeEditarAdmin) && l.tipo === 'receita' && l.nota_fiscal && dentistaEmiteNF(l.dentista_id) ? () => abrirEdicaoNF(l) : undefined}
+                          onEditarData={podeEditarAdmin ? () => abrirEdicaoDataEf(l) : undefined}
                           onAdiantar={podeAdiantar(l) && !adiantando ? () => setConfirmandoAdiantarId(l.id) : undefined}
                           confirmandoAdiantar={confirmandoAdiantarId === l.id}
                           onConfirmarAdiantar={() => adiantarParcelas(l, 'mes')}
@@ -1116,6 +1187,49 @@ export default function MovimentoDiarioPage() {
               <button onClick={() => { setEditandoNFId(null); setEditandoNFLancamento(null); setFormNF(''); setValorProcedimentoNF(null) }} className="btn-secondary flex-1 py-2">Cancelar</button>
               <button onClick={salvarNF} disabled={salvandoNF} className="btn-primary flex-1 py-2">
                 {salvandoNF ? 'Salvando...' : 'Salvar'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Modal: Mês de Referência (data efetiva) ── */}
+      {editandoDataEfId && editandoDataEfLancamento && (
+        <div className="modal-overlay" style={{ zIndex: 60 }}>
+          <div className="modal max-w-sm">
+            <div className="modal-header">
+              <h3 className="modal-title">Mês de Referência</h3>
+              <button onClick={() => { setEditandoDataEfId(null); setEditandoDataEfLancamento(null); setFormDataEf('') }} className="nav-icon hover:text-red-400 transition-colors"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 6L6 18M6 6l12 12"/></svg></button>
+            </div>
+            <p className="text-xs mb-4" style={{ color: 'var(--text-3)' }}>
+              Em qual mês esse pagamento conta pro dentista — normalmente é automático pela forma
+              de pagamento (cartão de crédito cai 30 dias depois, débito no próximo dia útil), mas
+              dá pra forçar um mês diferente pra dentistas com regra própria. Não muda a data do
+              lançamento em si, só a atribuição financeira.
+            </p>
+            <div className="mb-4">
+              <p className="form-label mb-1">Lançamento</p>
+              <p className="text-sm font-medium" style={{ color: 'var(--text-1)' }}>
+                {editandoDataEfLancamento.descricao} · R$ {fmt(editandoDataEfLancamento.valor)} · {editandoDataEfLancamento.forma}
+              </p>
+              <p className="text-xs mt-0.5" style={{ color: 'var(--text-3)' }}>
+                Lançado em {editandoDataEfLancamento.data.split('-').reverse().join('/')}
+                {editandoDataEfLancamento.data_efetiva && ' · mês de referência já está com ajuste manual'}
+              </p>
+            </div>
+            <div>
+              <label className="form-label">Mês de referência</label>
+              <input type="date" value={formDataEf} onChange={e => setFormDataEf(e.target.value)} className="form-input" autoFocus />
+            </div>
+            <div className="flex gap-2 mt-5">
+              <button onClick={() => { setEditandoDataEfId(null); setEditandoDataEfLancamento(null); setFormDataEf('') }} className="btn-secondary flex-1 py-2">Cancelar</button>
+              {editandoDataEfLancamento.data_efetiva && (
+                <button onClick={resetarDataEf} disabled={salvandoDataEf} className="btn-secondary flex-1 py-2">
+                  Usar automática
+                </button>
+              )}
+              <button onClick={salvarDataEf} disabled={!formDataEf || salvandoDataEf} className="btn-primary flex-1 py-2">
+                {salvandoDataEf ? 'Salvando...' : 'Salvar'}
               </button>
             </div>
           </div>

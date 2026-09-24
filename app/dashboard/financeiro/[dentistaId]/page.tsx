@@ -153,11 +153,6 @@ export default function DentistaFinanceiroPage() {
   const [formRepasse, setFormRepasse]     = useState<{ lancId: string; percentual: string; destinoId: string } | null>(null)
   const [salvandoRepasse, setSalvandoRepasse] = useState(false)
 
-  // Sobrescrita manual da data efetiva (admin/gestor)
-  const [editandoDataEfId, setEditandoDataEfId] = useState<string | null>(null)
-  const [formDataEf, setFormDataEf]             = useState('')
-  const [salvandoDataEf, setSalvandoDataEf]     = useState(false)
-
   // Repasses chegando (destino = este dentista)
   const [repassesRecebidos, setRepassesRecebidos] = useState<RepasseRecebido[]>([])
 
@@ -319,27 +314,6 @@ export default function DentistaFinanceiroPage() {
   async function removerRepasse(lancId: string, repasseId: string) {
     await supabase.from('repasses').delete().eq('id', repasseId)
     setRepasses(prev => ({ ...prev, [lancId]: (prev[lancId] ?? []).filter(r => r.id !== repasseId) }))
-  }
-
-  async function salvarDataEfetiva(l: Lancamento) {
-    if (!formDataEf) return
-    setSalvandoDataEf(true)
-    const { error } = await supabase.from('lancamentos').update({ data_efetiva: formDataEf }).eq('id', l.id)
-    if (!error) {
-      setLancamentos(prev => prev.map(x => x.id === l.id ? { ...x, data_efetiva: formDataEf } : x))
-      setEditandoDataEfId(null)
-    }
-    setSalvandoDataEf(false)
-  }
-
-  async function resetarDataEfetiva(l: Lancamento) {
-    setSalvandoDataEf(true)
-    const { error } = await supabase.from('lancamentos').update({ data_efetiva: null }).eq('id', l.id)
-    if (!error) {
-      setLancamentos(prev => prev.map(x => x.id === l.id ? { ...x, data_efetiva: null } : x))
-      setEditandoDataEfId(null)
-    }
-    setSalvandoDataEf(false)
   }
 
   const totalPago       = pagamentos.reduce((s, p) => s + p.valor, 0)
@@ -743,52 +717,6 @@ export default function DentistaFinanceiroPage() {
                                           ))}
                                         </div>
                                       </div>
-                                    )}
-
-                                    {podeEditar && (
-                                      editandoDataEfId === l.id ? (
-                                        <div className="flex flex-wrap items-center gap-2 mb-3">
-                                          <input
-                                            type="date"
-                                            value={formDataEf}
-                                            onChange={e => setFormDataEf(e.target.value)}
-                                            className="form-input"
-                                            style={{ maxWidth: '10rem' }}
-                                            autoFocus
-                                          />
-                                          <button
-                                            onClick={() => salvarDataEfetiva(l)}
-                                            disabled={!formDataEf || salvandoDataEf}
-                                            className="btn-primary px-3 py-1.5 text-xs"
-                                          >
-                                            {salvandoDataEf ? '...' : 'Salvar'}
-                                          </button>
-                                          {l.data_efetiva && (
-                                            <button
-                                              onClick={() => resetarDataEfetiva(l)}
-                                              disabled={salvandoDataEf}
-                                              className="btn-secondary px-3 py-1.5 text-xs"
-                                            >
-                                              Usar automática
-                                            </button>
-                                          )}
-                                          <button onClick={() => setEditandoDataEfId(null)} className="nav-icon hover:text-[var(--text-1)] transition-colors">
-                                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
-                                          </button>
-                                        </div>
-                                      ) : (
-                                        <button
-                                          onClick={() => { setEditandoDataEfId(l.id); setFormDataEf(l.data_efetiva ?? dataEfetiva(l)) }}
-                                          className="text-xs flex items-center gap-1 mb-3 transition-colors"
-                                          style={{ color: 'var(--text-3)' }}
-                                          onMouseEnter={e => (e.currentTarget.style.color = 'var(--text-2)')}
-                                          onMouseLeave={e => (e.currentTarget.style.color = 'var(--text-3)')}
-                                        >
-                                          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M3 9h18M8 2v4M16 2v4"/></svg>
-                                          Mês de referência: {dataEfetiva(l).split('-').reverse().join('/')}
-                                          {l.data_efetiva ? ' (manual)' : ''}
-                                        </button>
-                                      )
                                     )}
 
                                     {podeEditar && (
