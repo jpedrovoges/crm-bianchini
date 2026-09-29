@@ -7,7 +7,10 @@ import { supabase } from '@/lib/supabase'
 import ImportarCelos from './ImportarCelos'
 import { useSession } from '@/app/dashboard/SessionProvider'
 import { IMPOSTO_NF_PCT } from '@/lib/financeiro'
-import { buscarFechamento, type FechamentoRegistro } from '@/lib/fechamentoMensal'
+import {
+  buscarFechamento, calcularFechamentoMensal, valorFinalFechamento,
+  type FechamentoRegistro, type FechamentoMensalResultado,
+} from '@/lib/fechamentoMensal'
 import FechamentoBreakdown from './FechamentoBreakdown'
 
 const MESES = ['Janeiro','Fevereiro','Março','Abril','Maio','Junho','Julho','Agosto','Setembro','Outubro','Novembro','Dezembro']
@@ -168,6 +171,20 @@ export default function DentistaFinanceiroPage() {
     setVerFechamento(false)
     buscarFechamento(dentistaId, mes, ano).then(setFechamento).catch(() => setFechamento(null))
   }, [dentistaId, mes, ano, periodo])
+
+  // Valor a pagar/receber do mês, calculado ao vivo (não depende do mês
+  // estar oficialmente fechado — atualiza sozinho a cada lançamento novo).
+  const [fechamentoVivo, setFechamentoVivo] = useState<FechamentoMensalResultado | null>(null)
+  const [carregandoFechVivo, setCarregandoFechVivo] = useState(false)
+
+  useEffect(() => {
+    if (periodo !== 'mes') { setFechamentoVivo(null); return }
+    setCarregandoFechVivo(true)
+    calcularFechamentoMensal(dentistaId, mes, ano)
+      .then(setFechamentoVivo)
+      .catch(() => setFechamentoVivo(null))
+      .finally(() => setCarregandoFechVivo(false))
+  }, [dentistaId, mes, ano, periodo, lancamentos, repasses])
 
   useEffect(() => {
     supabase.from('dentistas').select('nome').eq('id', dentistaId).single()
@@ -454,6 +471,31 @@ export default function DentistaFinanceiroPage() {
               <p className="card-sub">{lancamentos.length} lançamento(s)</p>
             </div>
           </div>
+
+          {/* ── Fechamento do mês, calculado ao vivo (rateio/comissão/despesas comuns) ── */}
+          {periodo === 'mes' && (carregandoFechVivo || fechamentoVivo) && (
+            <div className="card-p5 mb-8">
+              {carregandoFechVivo && !fechamentoVivo ? (
+                <p className="page-subtitle text-sm">Calculando fechamento do mês...</p>
+              ) : fechamentoVivo && (
+                (() => {
+                  const valor = valorFinalFechamento(fechamentoVivo)
+                  const dentistaDeve = valor < 0
+                  return (
+                    <div className="flex items-center justify-between flex-wrap gap-2">
+                      <div>
+                        <p className="card-label">{dentistaDeve ? 'Você deve à clínica este mês' : 'A clínica te deve este mês'}</p>
+                        <p className="card-sub mt-0.5">Rateio, comissões e despesas comuns já descontados</p>
+                      </div>
+                      <p className={`card-value ${dentistaDeve ? 'text-despesa' : 'text-receita'}`}>
+                        R$ {fmt(Math.abs(valor))}
+                      </p>
+                    </div>
+                  )
+                })()
+              )}
+            </div>
+          )}
 
           {/* ── Visão anual: cards por mês ── */}
           {periodo === 'ano' ? (

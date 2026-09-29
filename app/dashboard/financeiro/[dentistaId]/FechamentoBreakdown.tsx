@@ -1,7 +1,9 @@
 import type { FechamentoMensalResultado } from '@/lib/fechamentoMensal'
 
-export function fmt(v: number) {
-  return v.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+// Aceita undefined: fechamentos já travados guardam o snapshot no formato da
+// época, e campos novos não existem neles.
+export function fmt(v: number | undefined) {
+  return (v ?? 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 }
 
 export default function FechamentoBreakdown({ resultado }: { resultado: FechamentoMensalResultado }) {
@@ -85,7 +87,14 @@ function ListaContribuicoes({ titulo, itens }: { titulo: string; itens: { dentis
   )
 }
 
-function ListaDespesas({ titulo, itens, total }: { titulo: string; itens: { id: string; descricao: string; data: string; valor: number }[]; total: number }) {
+type ItemLista = { id: string; descricao: string; data: string; valor: number }
+
+function ListaReceitas({ titulo, itens, total }: { titulo: string; itens: ItemLista[]; total: number | undefined }) {
+  return <ListaDespesas titulo={titulo} itens={itens} total={total} receita />
+}
+
+function ListaDespesas({ titulo, itens, total, receita = false }: { titulo: string; itens: ItemLista[]; total: number | undefined; receita?: boolean }) {
+  const cor = receita ? 'text-receita' : 'text-despesa'
   return (
     <div className="card-p5">
       <h2 className="widget-title">{titulo}</h2>
@@ -97,18 +106,18 @@ function ListaDespesas({ titulo, itens, total }: { titulo: string; itens: { id: 
             const [, m, d] = i.data.split('-')
             return (
               <div key={i.id} className="movimento-item">
-                <div className="dot-despesa" />
+                <div className={receita ? 'dot-receita' : 'dot-despesa'} />
                 <div className="flex-1 min-w-0">
                   <p className="mov-desc">{i.descricao}</p>
                   <p className="mov-meta">{d}/{m}</p>
                 </div>
-                <p className="text-sm font-medium text-despesa flex-shrink-0">R$ {fmt(i.valor)}</p>
+                <p className={`text-sm font-medium ${cor} flex-shrink-0`}>R$ {fmt(i.valor)}</p>
               </div>
             )
           })}
           <div className="flex justify-between pt-2 mt-1" style={{ borderTop: '1px solid var(--border)' }}>
             <span className="text-xs" style={{ color: 'var(--text-3)' }}>Total</span>
-            <span className="text-sm font-semibold text-despesa">R$ {fmt(total)}</span>
+            <span className={`text-sm font-semibold ${cor}`}>R$ {fmt(total)}</span>
           </div>
         </div>
       )}
@@ -120,8 +129,8 @@ function BreakdownMarco({ r }: { r: Extract<FechamentoMensalResultado, { tipo: '
   return (
     <div className="flex flex-col gap-6">
       <p className="card-sub">
-        Marco Bianchini: tudo que entra (rateio dos não-participantes + pagamentos dos demais
-        participantes) somado, e tudo que sai (despesas gerais do rateio + outras despesas
+        Marco Bianchini: tudo que entra (receitas em nome dele, comissões, rateio dos
+        não-participantes + pagamentos dos demais participantes) somado, e tudo que sai (despesas gerais do rateio + outras despesas
         atribuídas a ele no mês) somado.
       </p>
 
@@ -141,6 +150,8 @@ function BreakdownMarco({ r }: { r: Extract<FechamentoMensalResultado, { tipo: '
       </div>
 
       <h2 className="widget-title">Entradas</h2>
+      <ListaReceitas titulo="Receitas lançadas para ele (inclui comissões Celos)" itens={r.receitasProprias ?? []} total={r.totalReceitasProprias} />
+      <ListaContribuicoes titulo="13% de comissão (José Moisés / Raissa)" itens={r.deComissao13Diagrama2 ?? []} />
       <ListaContribuicoes titulo="20% dos dentistas não-participantes" itens={r.de20PctNaoParticipantes} />
       <ListaContribuicoes titulo="Metade das despesas dos dentistas não-participantes" itens={r.deMetadeDespesasNaoParticipantes} />
       <ListaContribuicoes titulo="Pagamentos à clínica de outros participantes do rateio" itens={r.deDiagrama3PagamentosClinica} />
@@ -155,37 +166,49 @@ function BreakdownMarco({ r }: { r: Extract<FechamentoMensalResultado, { tipo: '
 function BreakdownDiagrama2({ r }: { r: Extract<FechamentoMensalResultado, { tipo: 'diagrama2' }> }) {
   return (
     <div className="flex flex-col gap-6">
-      <p className="card-sub">José Moisés / Raissa — comissão do particular+Celos e rateio calculados separadamente.</p>
-
-      <div className="card-p5">
-        <h2 className="widget-title">Comissão do particular + Celos</h2>
-        <div className="flex flex-col gap-2 text-sm">
-          <div className="flex justify-between"><span style={{ color: 'var(--text-3)' }}>Particular + Celos já enviada</span><span>R$ {fmt(r.comissaoParticularECelos)}</span></div>
-          <div className="flex justify-between"><span style={{ color: 'var(--text-3)' }}>Participação a receber (repasses)</span><span>R$ {fmt(r.participacaoAReceber)}</span></div>
-          <div className="flex justify-between pt-2 font-semibold" style={{ borderTop: '1px solid var(--border)' }}>
-            <span>Resultado</span><span className="text-receita">R$ {fmt(r.comissaoResultado)}</span>
-          </div>
-        </div>
-      </div>
+      <p className="card-sub">
+        O valor da venda (particular ou Celos) cai direto na conta; aqui entra
+        a fatia do rateio, a comissão do Marco e as despesas.
+      </p>
 
       <div className="card-p5">
         <h2 className="widget-title">Rateio</h2>
         <div className="flex flex-col gap-2 text-sm">
-          <div className="flex justify-between"><span style={{ color: 'var(--text-3)' }}>Fatia do pool de rateio</span><span>R$ {fmt(r.rateio)}</span></div>
+          <div className="flex justify-between"><span style={{ color: 'var(--text-3)' }}>Valor total do rateio</span><span>R$ {fmt(r.rateioTotal)}</span></div>
           <div className="flex justify-between pt-2 font-semibold" style={{ borderTop: '1px solid var(--border)' }}>
-            <span>Resultado</span><span className="text-receita">R$ {fmt(r.rateioResultado)}</span>
+            <span>Fatia dele: </span><span className="text-receita">R$ {fmt(r.rateio)}</span>
           </div>
         </div>
       </div>
 
       <div className="card-p5">
-        <p className="card-label">Total do fechamento</p>
-        <p className="card-value text-receita">R$ {fmt(r.total)}</p>
+        <h2 className="widget-title">Comissão — Marco Bianchini</h2>
+        <div className="flex flex-col gap-2 text-sm">
+          <div className="flex justify-between">
+            <span style={{ color: 'var(--text-3)' }}>Comissão Celos (já enviada na importação)</span>
+            <span>R$ {fmt(r.comissaoCelosEnviada)}</span>
+          </div>
+          <p className="text-xs pt-2" style={{ color: 'var(--text-3)', borderTop: '1px solid var(--border)' }}>Demais entradas do mês</p>
+          {(r.receitasPorForma ?? []).length === 0 ? (
+            <p className="empty-text">Nenhuma entrada em dinheiro, pix ou cartão</p>
+          ) : (r.receitasPorForma ?? []).map(f => (
+            <div key={f.forma} className="flex justify-between"><span style={{ color: 'var(--text-3)' }}>{f.forma}</span><span>R$ {fmt(f.total)}</span></div>
+          ))}
+          <div className="flex justify-between"><span style={{ color: 'var(--text-3)' }}>Total das entradas</span><span>R$ {fmt(r.baseComissao)}</span></div>
+          <div className="flex justify-between pt-2 font-semibold" style={{ borderTop: '1px solid var(--border)' }}>
+            <span>13% a enviar pro Marco</span><span className="text-despesa">R$ {fmt(r.comissao13)}</span>
+          </div>
+        </div>
       </div>
 
-      <p className="card-sub">
-        Pool de rateio do mês: R$ {fmt(r.rateioAgregado.poolTotal)} dividido entre {r.rateioAgregado.nParticipantes} participante(s).
-      </p>
+      <ListaDespesas titulo="Despesas Gerais (rateio)" itens={r.despesasGerais} total={r.totalDespesasGerais} />
+      <ListaDespesas titulo="Outras Despesas" itens={r.outrasDespesas} total={r.totalOutrasDespesas} />
+
+      <div className="card-p5">
+        <p className="card-label">Total do fechamento</p>
+        <p className={`card-value ${r.total >= 0 ? 'text-receita' : 'text-despesa'}`}>R$ {fmt(r.total)}</p>
+        <p className="card-sub mt-1">Rateio − 13% de comissão − despesas (R$ {fmt(r.totalDespesas)})</p>
+      </div>
     </div>
   )
 }

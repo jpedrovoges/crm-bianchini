@@ -3,6 +3,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { supabase } from '@/lib/supabase'
 import { IMPOSTO_NF_PCT } from '@/lib/financeiro'
+import { descricaoComissaoCelos } from '@/lib/fechamentoMensal'
 
 const MESES = ['Janeiro','Fevereiro','Março','Abril','Maio','Junho','Julho','Agosto','Setembro','Outubro','Novembro','Dezembro']
 
@@ -156,10 +157,9 @@ export default function ImportarCelos({ dentistaId, dentistaNome, mes, ano, onIm
       const totalComissao = Math.round(
         linhas.reduce((s, l) => s + calcDescontoValor(l.valor_bruto), 0) * 100
       ) / 100
-      const primeiroNome = dentistaNome.trim().split(' ')[0]
       const { error: errM } = await supabase.from('lancamentos').insert({
         tipo:        'receita',
-        descricao:   `Comissão Celos - ${primeiroNome}`,
+        descricao:   descricaoComissaoCelos(dentistaNome),
         valor:       totalComissao,
         forma:       'Convênio',
         data:        dataImportacao,

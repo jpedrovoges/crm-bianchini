@@ -150,59 +150,102 @@ export function calcularRateioAgregado(dentistas: DentistaRow[], lancamentos: La
   return { poolTotal, nParticipantes, valorPorParticipante }
 }
 
-// ── Diagrama 2: José Moisés / Raissa ──
-export function calcularComissaoParticularECelos(lancamentos: LancamentoCalc[], dentistaId: string): number {
-  const particular = lancamentos
-    .filter(l => l.tipo === 'receita' && l.dentista_id === dentistaId && l.forma !== 'Convênio')
-    .reduce((s, l) => s + l.valor, 0)
-  // Lote da Celos: receita de convênio sem paciente vinculado (mesma
-  // convenção usada pra identificar a tag "Celos" no Movimento Diário).
-  const celosJaEnviada = lancamentos
-    .filter(l => l.tipo === 'receita' && l.dentista_id === dentistaId && l.forma === 'Convênio' && !l.paciente_id)
-    .reduce((s, l) => s + l.valor, 0)
-  return round2(particular + celosJaEnviada)
+// O valor da venda (particular ou Celos) cai direto na conta do dentista,
+// nunca passa pela clínica. A comissão do Marco vem de duas fontes:
+//  - Celos: já enviada na importação da planilha (ImportarCelos grava um
+//    lançamento "Comissão Celos - <primeiro nome>" em nome do Marco) — aqui
+//    só é mostrada, não entra de novo no total;
+//  - demais entradas (dinheiro, pix, cartão, boleto): 13% calculados no
+//    fechamento, a enviar pro Marco.
+export function descricaoComissaoCelos(nomeDentista: string) {
+  return `Comissão Celos - ${nomeDentista.trim().split(' ')[0]}`
 }
 
+export function calcularComissaoCelosEnviada(lancamentos: LancamentoCalc[], dentistaNome: string, marcoId: string | undefined): number {
+  if (!marcoId) return 0
+  const alvo = normalize(descricaoComissaoCelos(dentistaNome))
+  return round2(
+    lancamentos
+      .filter(l => l.tipo === 'receita' && l.dentista_id === marcoId && normalize(l.descricao) === alvo)
+      .reduce((s, l) => s + l.valor, 0)
+  )
+}
+
+// Receitas do dentista que não são convênio (Celos já tem comissão própria)
+// nem movimentação interna — base dos 13% de comissão do Marco.
+function receitasBaseComissao(lancamentos: LancamentoCalc[], dentistaId: string) {
+  return lancamentos.filter(l =>
+    l.tipo === 'receita' && l.dentista_id === dentistaId && l.forma !== 'Convênio' && l.forma !== 'Interno'
+  )
+}
+
+export function calcularComissao13(lancamentos: LancamentoCalc[], dentistaId: string): number {
+  const base = receitasBaseComissao(lancamentos, dentistaId).reduce((s, l) => s + l.valor, 0)
+  return round2(base * COMISSAO_MARCO_PCT / 100)
+}
+
+export type ReceitaPorForma = { forma: string; total: number }
+
 export type ResultadoDiagrama2 = {
-  comissaoParticularECelos: number
-  participacaoAReceber: number
-  comissaoResultado: number
+  rateioTotal: number
   rateio: number
-  rateioResultado: number
+  comissaoCelosEnviada: number
+  receitasPorForma: ReceitaPorForma[]
+  baseComissao: number
+  comissao13: number
+  // Despesas do mês atribuídas a ele, incluindo a fatia do rateio das
+  // despesas comuns (forma 'Interno', gerada pelo "Fechar Mês" da aba
+  // Despesas Comuns) — mesmo split usado no diagrama do Marco.
+  despesasGerais: DespesaMarco[]
+  totalDespesasGerais: number
+  outrasDespesas: DespesaMarco[]
+  totalOutrasDespesas: number
+  totalDespesas: number
   total: number
 }
 
 export function calcularDiagrama2(
-  dentistaId: string,
+  dentista: DentistaRow,
+  marcoId: string | undefined,
   lancamentos: LancamentoCalc[],
-  repasses: RepasseCalc[],
-  rateioValorParticipante: number,
+  rateioAgregado: RateioAgregado,
 ): ResultadoDiagrama2 {
-  const comissaoParticularECelos = calcularComissaoParticularECelos(lancamentos, dentistaId)
-  const participacaoAReceber = round2(
-    repasses.filter(r => r.dentista_destino_id === dentistaId).reduce((s, r) => s + r.valor, 0)
-  )
+  const comissaoCelosEnviada = calcularComissaoCelosEnviada(lancamentos, dentista.nome, marcoId)
 
-  // Gateway "Tem participação a receber?": se sim, o valor da participação é
-  // subtraído da comissão (particular + Celos); se não, paga cheio.
-  const comissaoResultado = participacaoAReceber > 0
-    ? round2(comissaoParticularECelos - participacaoAReceber)
-    : comissaoParticularECelos
+  const porForma = new Map<string, number>()
+  for (const l of receitasBaseComissao(lancamentos, dentista.id)) {
+    porForma.set(l.forma, (porForma.get(l.forma) ?? 0) + l.valor)
+  }
+  const receitasPorForma = [...porForma]
+    .map(([forma, total]) => ({ forma, total: round2(total) }))
+    .sort((a, b) => b.total - a.total)
+  const baseComissao = round2(receitasPorForma.reduce((s, f) => s + f.total, 0))
+  const comissao13 = calcularComissao13(lancamentos, dentista.id)
 
-  // Gateway "Teve comissão a receber de outros dentistas?": se sim, o valor
-  // do rateio é subtraído do total de comissão a receber; se não, o rateio
-  // é pago cheio, à parte.
-  const rateioResultado = participacaoAReceber > 0
-    ? round2(participacaoAReceber - rateioValorParticipante)
-    : rateioValorParticipante
+  const despesasDeste = despesasDoDentista(lancamentos, dentista.id)
+  const despesasGerais = despesasDeste
+    .filter(l => l.forma === 'Interno')
+    .map(l => ({ id: l.id, descricao: l.descricao, valor: l.valor, data: l.data }))
+  const outrasDespesas = despesasDeste
+    .filter(l => l.forma !== 'Interno')
+    .map(l => ({ id: l.id, descricao: l.descricao, valor: l.valor, data: l.data }))
+  const totalDespesasGerais = round2(despesasGerais.reduce((s, d) => s + d.valor, 0))
+  const totalOutrasDespesas = round2(outrasDespesas.reduce((s, d) => s + d.valor, 0))
+  const totalDespesas = round2(totalDespesasGerais + totalOutrasDespesas)
 
   return {
-    comissaoParticularECelos,
-    participacaoAReceber,
-    comissaoResultado,
-    rateio: rateioValorParticipante,
-    rateioResultado,
-    total: round2(comissaoResultado + rateioResultado),
+    rateioTotal: rateioAgregado.poolTotal,
+    rateio: rateioAgregado.valorPorParticipante,
+    comissaoCelosEnviada,
+    receitasPorForma,
+    baseComissao,
+    comissao13,
+    despesasGerais,
+    totalDespesasGerais,
+    outrasDespesas,
+    totalOutrasDespesas,
+    totalDespesas,
+    total: round2(rateioAgregado.valorPorParticipante - comissao13 - totalDespesas),
   }
 }
 
@@ -270,15 +313,17 @@ export function calcularDiagrama3(
 }
 
 // ── Marco Bianchini: "só recebe os dinheiros" ──
-// Escopo simplificado da fase 1 (ver plano): soma o que vem dos dentistas
-// não-participantes (20% + metade das despesas) e o que os demais
-// participantes do rateio (via Diagrama 3) precisam pagar à clínica no mês.
-// Diagrama 2 (José Moisés/Raissa) não tem um passo explícito de "envia pro
-// Marco" no fluxo descrito, então não entra aqui.
+// Total entrada = tudo que entra pra ele no mês: receitas lançadas em nome
+// dele (inclui as "Comissão Celos - X" gravadas na importação), 20% + metade
+// das despesas dos não-participantes, os 13% de comissão de José Moisés /
+// Raissa e o que os demais participantes (Diagrama 3) pagam à clínica.
 export type ContribuicaoMarco = { dentistaId: string; nome: string; valor: number }
 export type DespesaMarco = { id: string; descricao: string; valor: number; data: string }
 
 export type ResultadoMarco = {
+  receitasProprias: DespesaMarco[]
+  totalReceitasProprias: number
+  deComissao13Diagrama2: ContribuicaoMarco[]
   de20PctNaoParticipantes: ContribuicaoMarco[]
   deMetadeDespesasNaoParticipantes: ContribuicaoMarco[]
   deDiagrama3PagamentosClinica: ContribuicaoMarco[]
@@ -306,6 +351,18 @@ export function calcularMarcoRecebeOsDinheiros(
 
   const naoParticipantes = dentistas.filter(d => d.ativo && !d.participa_despesas_comuns)
 
+  const receitasProprias = marco
+    ? lancamentos
+        .filter(l => l.tipo === 'receita' && l.dentista_id === marco.id)
+        .map(l => ({ id: l.id, descricao: l.descricao, valor: l.valor, data: l.data }))
+    : []
+  const totalReceitasProprias = round2(receitasProprias.reduce((s, r) => s + r.valor, 0))
+
+  const deComissao13Diagrama2 = [joseMoises, raissa]
+    .filter((d): d is DentistaRow => !!d && d.participa_despesas_comuns)
+    .map(d => ({ dentistaId: d.id, nome: d.nome, valor: calcularComissao13(lancamentos, d.id) }))
+    .filter(c => c.valor > 0)
+
   const de20PctNaoParticipantes = naoParticipantes
     .map(d => ({ dentistaId: d.id, nome: d.nome, valor: calcularBranchA(d.id, lancamentos).valorMarco20pct }))
     .filter(c => c.valor > 0)
@@ -326,6 +383,8 @@ export function calcularMarcoRecebeOsDinheiros(
     .filter(c => c.valor > 0)
 
   const totalEntrada = round2(
+    totalReceitasProprias +
+    deComissao13Diagrama2.reduce((s, c) => s + c.valor, 0) +
     de20PctNaoParticipantes.reduce((s, c) => s + c.valor, 0) +
     deMetadeDespesasNaoParticipantes.reduce((s, c) => s + c.valor, 0) +
     deDiagrama3PagamentosClinica.reduce((s, c) => s + c.valor, 0)
@@ -344,6 +403,9 @@ export function calcularMarcoRecebeOsDinheiros(
   const totalSaida = round2(totalDespesasGerais + totalOutrasDespesas)
 
   return {
+    receitasProprias,
+    totalReceitasProprias,
+    deComissao13Diagrama2,
     de20PctNaoParticipantes,
     deMetadeDespesasNaoParticipantes,
     deDiagrama3PagamentosClinica,
@@ -363,6 +425,17 @@ export type FechamentoMensalResultado =
   | ({ tipo: 'marco'; dentista: DentistaRow } & ResultadoMarco)
   | ({ tipo: 'diagrama2'; dentista: DentistaRow; rateioAgregado: RateioAgregado } & ResultadoDiagrama2)
   | ({ tipo: 'diagrama3'; dentista: DentistaRow; rateioAgregado: RateioAgregado } & ResultadoDiagrama3)
+
+// Valor final assinado do fechamento, qualquer que seja o tipo do dentista:
+// positivo = clínica deve/paga pro dentista, negativo = dentista deve pra
+// clínica. Usado pra mostrar um resumo único (ex. "valor a pagar este mês")
+// sem precisar checar o tipo em cada tela.
+export function valorFinalFechamento(r: FechamentoMensalResultado): number {
+  if (r.tipo === 'branchA') return r.totalAAcertar
+  if (r.tipo === 'marco') return r.saldo
+  if (r.tipo === 'diagrama2') return r.total
+  return r.quemPaga === 'dentista' ? -r.valor : r.valor
+}
 
 export async function calcularFechamentoMensal(dentistaId: string, mes: number, ano: number): Promise<FechamentoMensalResultado> {
   const { data: dentistasData, error: errDentistas } = await supabase
@@ -435,7 +508,7 @@ export async function calcularFechamentoMensal(dentistaId: string, mes: number, 
       tipo: 'diagrama2',
       dentista,
       rateioAgregado,
-      ...calcularDiagrama2(dentistaId, lancamentos, repasses, rateioAgregado.valorPorParticipante),
+      ...calcularDiagrama2(dentista, marco?.id, lancamentos, rateioAgregado),
     }
   }
 

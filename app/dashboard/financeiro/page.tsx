@@ -409,6 +409,13 @@ export default function FinanceiroPage() {
                           <span className="text-sm font-medium text-receita flex-shrink-0">R$ {fmt(f.total)}</span>
                         </div>
                       ))}
+                      <div className="flex justify-between items-center pt-2 mt-1" style={{ borderTop: '1px solid var(--border)' }}>
+                        <div>
+                          <p className="text-xs font-medium" style={{ color: 'var(--text-2)' }}>Total de receitas do mês</p>
+                          <p className="mov-meta">{receitas.length} lançamento(s)</p>
+                        </div>
+                        <span className="text-sm font-semibold text-receita">R$ {fmt(totalRec)}</span>
+                      </div>
                     </div>
                   )}
                 </div>
