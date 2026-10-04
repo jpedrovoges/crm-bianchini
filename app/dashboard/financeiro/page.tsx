@@ -4,6 +4,7 @@ import { useState, useEffect } from 'react'
 import Link from 'next/link'
 import { supabase } from '@/lib/supabase'
 import DespesasComuns from './DespesasComuns'
+import { useSession } from '@/app/dashboard/SessionProvider'
 
 const MESES = ['Janeiro','Fevereiro','Março','Abril','Maio','Junho','Julho','Agosto','Setembro','Outubro','Novembro','Dezembro']
 
@@ -104,13 +105,18 @@ const FORMAS = ['Pix', 'Dinheiro', 'Cartão Crédito', 'Cartão Débito', 'Conv�
 
 export default function FinanceiroPage() {
   const hoje = new Date()
-  const [aba, setAba] = useState<AbaFinanceiro>('lancamentos')
+  const session = useSession()
+  // Recepção só enxerga a aba NF a Fazer
+  const soNF = session?.role === 'recepcao'
+  const abasVisiveis = soNF ? ABAS.filter(a => a.key === 'nf-a-fazer') : ABAS
+  const [aba, setAba] = useState<AbaFinanceiro>(soNF ? 'nf-a-fazer' : 'lancamentos')
 
   useEffect(() => {
+    if (soNF) return
     const params = new URLSearchParams(window.location.search)
     const abaParam = params.get('aba') as AbaFinanceiro | null
     if (abaParam) setAba(abaParam)
-  }, [])
+  }, [soNF])
   const [periodo, setPeriodo] = useState<Periodo>('mes')
   const [mes, setMes] = useState(hoje.getMonth())
   const [ano, setAno] = useState(hoje.getFullYear())
@@ -118,6 +124,9 @@ export default function FinanceiroPage() {
   // lançamentos gerais
   const [lancamentos, setLancamentos] = useState<Lancamento[]>([])
   const [loading, setLoading] = useState(true)
+  // Filtro por forma de pagamento: clicar numa linha de "Receitas por Forma"
+  // mostra só as receitas daquela forma em "Lançamentos do Período".
+  const [formaFiltro, setFormaFiltro] = useState<string | null>(null)
 
   // NF a fazer
   const [pendentesNF, setPendentesNF] = useState<NfItem[]>([])
@@ -254,7 +263,14 @@ export default function FinanceiroPage() {
     return { forma, total, count }
   }).filter(f => f.count > 0)
 
-  const porData = lancamentos.reduce<Record<string, Lancamento[]>>((acc, l) => {
+  // Derivado (sem effect): se a forma filtrada some ao trocar de mês, o
+  // filtro deixa de valer sozinho.
+  const formaAtiva = porForma.some(f => f.forma === formaFiltro) ? formaFiltro : null
+  const lancamentosVisiveis = formaAtiva
+    ? lancamentos.filter(l => l.tipo === 'receita' && l.forma === formaAtiva)
+    : lancamentos
+
+  const porData = lancamentosVisiveis.reduce<Record<string, Lancamento[]>>((acc, l) => {
     acc[l.data] = acc[l.data] ? [...acc[l.data], l] : [l]
     return acc
   }, {})
@@ -275,14 +291,14 @@ export default function FinanceiroPage() {
       {/* ── Header ── */}
       <div className="page-header-row mb-6">
         <div>
-          <h1 className="page-title">Financeiro</h1>
-          <p className="page-subtitle">Receitas, despesas e notas fiscais</p>
+          <h1 className="page-title">{soNF ? 'NF a Fazer' : 'Financeiro'}</h1>
+          <p className="page-subtitle">{soNF ? 'Notas fiscais pendentes de emissão' : 'Receitas, despesas e notas fiscais'}</p>
         </div>
         <div
           className="flex gap-1 rounded-lg p-1 border border-[var(--border)]"
           style={{ backgroundColor: 'var(--surface-muted)' }}
         >
-          {ABAS.map(a => (
+          {abasVisiveis.map(a => (
             <button
               key={a.key}
               onClick={() => setAba(a.key)}
@@ -392,7 +408,18 @@ export default function FinanceiroPage() {
                   ) : (
                     <div className="flex flex-col gap-2">
                       {porForma.sort((a, b) => b.total - a.total).map(f => (
-                        <div key={f.forma} className="movimento-item">
+                        <button
+                          key={f.forma}
+                          type="button"
+                          onClick={() => setFormaFiltro(formaAtiva === f.forma ? null : f.forma)}
+                          className="movimento-item w-full text-left cursor-pointer transition-opacity"
+                          style={{
+                            opacity: formaAtiva && formaAtiva !== f.forma ? 0.45 : 1,
+                            outline: formaAtiva === f.forma ? '1px solid rgb(52 211 153 / 0.6)' : undefined,
+                            borderRadius: 8,
+                          }}
+                          title={formaAtiva === f.forma ? 'Remover filtro' : `Mostrar só ${f.forma}`}
+                        >
                           <div className="dot-receita" />
                           <div className="flex-1 min-w-0">
                             <p className="mov-desc">{f.forma}</p>
@@ -407,7 +434,7 @@ export default function FinanceiroPage() {
                             </div>
                           </div>
                           <span className="text-sm font-medium text-receita flex-shrink-0">R$ {fmt(f.total)}</span>
-                        </div>
+                        </button>
                       ))}
                       <div className="flex justify-between items-center pt-2 mt-1" style={{ borderTop: '1px solid var(--border)' }}>
                         <div>
@@ -421,7 +448,21 @@ export default function FinanceiroPage() {
                 </div>
 
                 <div className="lg:col-span-2 card-p5">
-                  <h2 className="widget-title">Lançamentos do Período</h2>
+                  <div className="flex items-center justify-between gap-2 flex-wrap">
+                    <h2 className="widget-title">Lançamentos do Período</h2>
+                    {formaAtiva && (
+                      <button
+                        type="button"
+                        onClick={() => setFormaFiltro(null)}
+                        className="text-xs px-2 py-1 rounded-full inline-flex items-center gap-1 mb-3"
+                        style={{ backgroundColor: 'rgb(34 197 94 / 0.15)', color: 'rgb(74 222 128)' }}
+                        title="Remover filtro"
+                      >
+                        Só {formaAtiva}
+                        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M18 6L6 18M6 6l12 12"/></svg>
+                      </button>
+                    )}
+                  </div>
                   {lancamentos.length === 0 ? (
                     <p className="empty-text">Nenhum lançamento em {titulo}</p>
                   ) : (

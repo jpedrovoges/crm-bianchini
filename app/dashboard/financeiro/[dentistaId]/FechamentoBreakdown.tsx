@@ -16,12 +16,19 @@ export default function FechamentoBreakdown({ resultado }: { resultado: Fechamen
 function BreakdownBranchA({ r }: { r: Extract<FechamentoMensalResultado, { tipo: 'branchA' }> }) {
   return (
     <div className="flex flex-col gap-6">
-      <p className="card-sub">Dentista não participa do rateio — split fixo sobre o total de receitas do mês.</p>
+      <p className="card-sub">Dentista não participa do rateio — split fixo sobre o total de receitas do mês, descontados o imposto (11,33%) e o laboratório.</p>
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         <div className="card-p5">
           <p className="card-label">Total de receitas</p>
           <p className="card-value text-receita">R$ {fmt(r.totalReceitas)}</p>
+          {r.baseRateio !== undefined && (
+            <p className="card-sub">
+              − R$ {fmt(r.impostoNF)} de imposto
+              {(r.totalLaboratorio ?? 0) > 0 ? ` − R$ ${fmt(r.totalLaboratorio)} de laboratório` : ''}
+              {' '}= base R$ {fmt(r.baseRateio)}
+            </p>
+          )}
         </div>
         <div className="card-p5">
           <p className="card-label">Fica com o dentista (50%)</p>
@@ -195,6 +202,15 @@ function BreakdownDiagrama2({ r }: { r: Extract<FechamentoMensalResultado, { tip
             <div key={f.forma} className="flex justify-between"><span style={{ color: 'var(--text-3)' }}>{f.forma}</span><span>R$ {fmt(f.total)}</span></div>
           ))}
           <div className="flex justify-between"><span style={{ color: 'var(--text-3)' }}>Total das entradas</span><span>R$ {fmt(r.baseComissao)}</span></div>
+          {r.baseComissaoLiquida !== undefined && (
+            <>
+              <div className="flex justify-between"><span style={{ color: 'var(--text-3)' }}>Imposto (11,33%)</span><span className="text-despesa">− R$ {fmt(r.impostoNF)}</span></div>
+              {(r.totalLaboratorio ?? 0) > 0 && (
+                <div className="flex justify-between"><span style={{ color: 'var(--text-3)' }}>Laboratório</span><span className="text-despesa">− R$ {fmt(r.totalLaboratorio)}</span></div>
+              )}
+              <div className="flex justify-between"><span style={{ color: 'var(--text-3)' }}>Base da comissão</span><span>R$ {fmt(r.baseComissaoLiquida)}</span></div>
+            </>
+          )}
           <div className="flex justify-between pt-2 font-semibold" style={{ borderTop: '1px solid var(--border)' }}>
             <span>13% a enviar pro Marco</span><span className="text-despesa">R$ {fmt(r.comissao13)}</span>
           </div>
@@ -236,6 +252,9 @@ function BreakdownDiagrama3({ r }: { r: Extract<FechamentoMensalResultado, { tip
           <div className="flex flex-col gap-2 text-sm">
             <div className="flex justify-between"><span style={{ color: 'var(--text-3)' }}>Comissões recebidas</span><span>R$ {fmt(r.somaB_comissoesRecebidas)}</span></div>
             <div className="flex justify-between"><span style={{ color: 'var(--text-3)' }}>Faturamento particular (bruto)</span><span>R$ {fmt(r.somaB_faturamentoParticularBruto)}</span></div>
+            {(r.somaB_laboratorio ?? 0) > 0 && (
+              <div className="flex justify-between"><span style={{ color: 'var(--text-3)' }}>Laboratório (descontado após o imposto)</span><span className="text-despesa">− R$ {fmt(r.somaB_laboratorio)}</span></div>
+            )}
             <div className="flex justify-between"><span style={{ color: 'var(--text-3)' }}>Faturamento particular (líquido)</span><span>R$ {fmt(r.somaB_faturamentoParticularLiquido)}</span></div>
             <div className="flex justify-between pt-2 font-semibold" style={{ borderTop: '1px solid var(--border)' }}>
               <span>Soma B</span><span>R$ {fmt(r.somaB)}</span>

@@ -36,7 +36,8 @@ export async function proxy(req: NextRequest) {
   }
 
   if (session.role === 'recepcao') {
-    const exacto = ['/dashboard', '/dashboard/change-password']
+    // /dashboard/financeiro: só a página principal (a tela limita à aba NF a Fazer)
+    const exacto = ['/dashboard', '/dashboard/change-password', '/dashboard/financeiro']
     const comSubrotas = ['/dashboard/movimento-diario', '/dashboard/pacientes', '/dashboard/fornecedores']
     const ok = exacto.includes(pathname) || comSubrotas.some(p => pathname === p || pathname.startsWith(p + '/'))
     if (!ok) return NextResponse.redirect(new URL('/dashboard', req.url))

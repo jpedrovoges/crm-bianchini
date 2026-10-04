@@ -6,6 +6,7 @@ import Link from 'next/link'
 import { useSession } from '@/app/dashboard/SessionProvider'
 import {
   calcularFechamentoMensal,
+  laboratorioDoResultado,
   buscarFechamento,
   fecharMes,
   reabrirMes,
@@ -36,24 +37,47 @@ export default function FechamentoMesPage() {
   const [erro, setErro] = useState<string | null>(null)
   const [processando, setProcessando] = useState(false)
   const [confirmando, setConfirmando] = useState(false)
+  // Laboratório do mês, digitado aqui na hora de fechar (pago direto pelo
+  // dentista — só reduz a base da comissão/rateio). `labDigitado` null =
+  // ainda não mexeu: o cálculo usa o valor já gravado no fechamento (ou 0).
+  const [labTexto, setLabTexto] = useState('')
+  const [labDigitado, setLabDigitado] = useState<number | null>(null)
 
   const carregar = useCallback(() => {
     if (!podeVer) return
     setLoading(true)
     setErro(null)
     Promise.all([
-      calcularFechamentoMensal(dentistaId, mes, ano),
+      calcularFechamentoMensal(dentistaId, mes, ano, labDigitado ?? undefined),
       buscarFechamento(dentistaId, mes, ano),
     ])
-      .then(([r, reg]) => { setResultado(r); setRegistro(reg) })
+      .then(([r, reg]) => {
+        setResultado(r); setRegistro(reg)
+        if (labDigitado === null) {
+          const lab = laboratorioDoResultado(r)
+          setLabTexto(lab > 0 ? String(lab) : '')
+        }
+      })
       .catch(e => setErro(e instanceof Error ? e.message : 'Erro ao calcular o fechamento'))
       .finally(() => setLoading(false))
-  }, [dentistaId, mes, ano, podeVer])
+  }, [dentistaId, mes, ano, podeVer, labDigitado])
 
-  useEffect(() => { carregar() }, [carregar])
+  // Debounce: recalcula 400ms depois de parar de digitar o laboratório.
+  useEffect(() => {
+    const t = setTimeout(carregar, labDigitado === null ? 0 : 400)
+    return () => clearTimeout(t)
+  }, [carregar, labDigitado])
 
-  function mesAnterior() { setConfirmando(false); if (mes === 0) { setMes(11); setAno(a => a - 1) } else setMes(m => m - 1) }
-  function proximoMes()  { setConfirmando(false); if (mes === 11) { setMes(0); setAno(a => a + 1) } else setMes(m => m + 1) }
+  function trocarMes() { setConfirmando(false); setLabDigitado(null); setLabTexto('') }
+  function mesAnterior() { trocarMes(); if (mes === 0) { setMes(11); setAno(a => a - 1) } else setMes(m => m - 1) }
+  function proximoMes()  { trocarMes(); if (mes === 11) { setMes(0); setAno(a => a + 1) } else setMes(m => m + 1) }
+
+  function mudarLab(texto: string) {
+    setLabTexto(texto)
+    setConfirmando(false)
+    const v = parseFloat(texto.replace(',', '.'))
+    setLabDigitado(Number.isFinite(v) && v > 0 ? v : 0)
+  }
 
   async function handleFechar() {
     if (!resultado || !session) return
@@ -150,10 +174,28 @@ export default function FechamentoMesPage() {
         )}
       </div>
 
-      {loading && <p className="page-subtitle">Calculando...</p>}
+      {resultado && resultado.tipo !== 'marco' && (
+        <div className="card-p5 mb-6 max-w-sm">
+          <label className="form-label">Laboratório do mês (R$)</label>
+          <input type="number" min="0" step="0.01" placeholder="0,00"
+            value={labTexto} onChange={e => mudarLab(e.target.value)}
+            disabled={fechado || processando} className="form-input" />
+          <p className="card-sub mt-1.5">
+            {fechado
+              ? 'Mês fechado — reabra para alterar o laboratório.'
+              : 'Pago direto pelo dentista.'}
+          </p>
+        </div>
+      )}
+
+      {loading && !resultado && <p className="page-subtitle">Calculando...</p>}
       {erro && <p className="text-xs text-red-400">{erro}</p>}
 
-      {!loading && !erro && resultado && <FechamentoBreakdown resultado={resultado} />}
+      {!erro && resultado && (
+        <div style={{ opacity: loading ? 0.5 : 1, transition: 'opacity 150ms' }}>
+          <FechamentoBreakdown resultado={resultado} />
+        </div>
+      )}
     </div>
   )
 }
