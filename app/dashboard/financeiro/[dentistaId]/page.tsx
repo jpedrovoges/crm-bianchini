@@ -138,6 +138,10 @@ export default function DentistaFinanceiroPage() {
   const [confirmandoId, setConfirmandoId] = useState<string | null>(null)
   const [confirmarLimparData, setConfirmarLimparData] = useState<string | null>(null)
   const [refreshKey, setRefreshKey] = useState(0)
+  // Filtros da lista "Lançamentos do Período": forma (clicando em Receitas
+  // por Forma) e busca livre por valor/descrição/paciente.
+  const [filtroForma, setFiltroForma] = useState<string | null>(null)
+  const [busca, setBusca]             = useState('')
 
   const session    = useSession()
   const soLeitura  = session?.role === 'dentista'
@@ -348,7 +352,23 @@ export default function DentistaFinanceiroPage() {
     return { forma, total: movs.reduce((s, l) => s + l.valor, 0), count: movs.length }
   }).filter(f => f.count > 0)
 
-  const porData = lancamentos.reduce<Record<string, Lancamento[]>>((acc, l) => {
+  // Busca por valor aceita "150", "150,5" ou "1.500,00"; texto casa com
+  // descrição, paciente ou observação (sem acento/caixa).
+  const normalizar = (s: string) => s.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase()
+  const termo = busca.trim()
+  const termoNum = parseFloat(termo.replace(/\./g, '').replace(',', '.'))
+  const filtrando = !!filtroForma || !!termo
+  const lancamentosFiltrados = lancamentos.filter(l => {
+    if (filtroForma && (l.tipo !== 'receita' || l.forma !== filtroForma)) return false
+    if (!termo) return true
+    if (/^[\d.,]+$/.test(termo) && Number.isFinite(termoNum)) {
+      return fmt(l.valor).replace(/\./g, '').startsWith(termo.replace(/\./g, '')) || l.valor === termoNum
+    }
+    const t = normalizar(termo)
+    return [l.descricao, l.pacientes?.nome, l.observacao].some(c => c && normalizar(c).includes(t))
+  })
+
+  const porData = lancamentosFiltrados.reduce<Record<string, Lancamento[]>>((acc, l) => {
     const ef = dataEfetiva(l)
     acc[ef] = acc[ef] ? [...acc[ef], l] : [l]; return acc
   }, {})
@@ -547,7 +567,10 @@ export default function DentistaFinanceiroPage() {
                 ) : (
                   <div className="flex flex-col gap-2">
                     {porForma.sort((a, b) => b.total - a.total).map(f => (
-                      <div key={f.forma} className="movimento-item">
+                      <div key={f.forma} className="movimento-item cursor-pointer select-none"
+                        title={filtroForma === f.forma ? 'Mostrar todos os lançamentos' : `Mostrar só lançamentos em ${f.forma}`}
+                        onClick={() => setFiltroForma(atual => atual === f.forma ? null : f.forma)}
+                        style={filtroForma === f.forma ? { outline: '1px solid var(--accent)', borderRadius: '0.5rem', backgroundColor: 'var(--accent-soft)' } : undefined}>
                         <div className="dot-receita" />
                         <div className="flex-1 min-w-0">
                           <p className="mov-desc">{f.forma}</p>
@@ -618,9 +641,38 @@ export default function DentistaFinanceiroPage() {
 
             {/* Lançamentos data */}
             <div className="lg:col-span-2 card-p5 flex flex-col" style={{ maxHeight: '32rem' }}>
-              <h2 className="widget-title flex-shrink-0">Lançamentos do Período</h2>
+              <div className="flex items-center justify-between gap-3 flex-wrap mb-3 flex-shrink-0">
+                <h2 className="widget-title mb-0">Lançamentos do Período</h2>
+                <div className="flex items-center gap-2 flex-wrap">
+                  {filtroForma && (
+                    <button onClick={() => setFiltroForma(null)}
+                      className="text-xs px-2 py-0.5 rounded-full inline-flex items-center gap-1"
+                      style={{ backgroundColor: 'var(--accent-soft)', color: 'var(--accent)' }}
+                      title="Remover filtro">
+                      {filtroForma}
+                      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M18 6L6 18M6 6l12 12"/></svg>
+                    </button>
+                  )}
+                  <div className="search-bar mb-0 py-1.5" style={{ width: '13rem' }}>
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="nav-icon flex-shrink-0">
+                      <circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/>
+                    </svg>
+                    <input type="text" value={busca} onChange={e => setBusca(e.target.value)}
+                      placeholder="Buscar valor, paciente..." className="search-input text-xs" />
+                  </div>
+                </div>
+              </div>
+              {filtrando && lancamentosFiltrados.length > 0 && (
+                <p className="text-xs mb-3 flex-shrink-0" style={{ color: 'var(--text-3)' }}>
+                  {lancamentosFiltrados.length} lançamento(s) · total R$ {fmt(lancamentosFiltrados.reduce((s, l) => s + (l.tipo === 'receita' ? l.valor : -l.valor), 0))}
+                  {' · '}
+                  <button onClick={() => { setFiltroForma(null); setBusca('') }} className="underline">limpar filtros</button>
+                </p>
+              )}
               {lancamentos.length === 0 ? (
                 <p className="empty-text">Nenhum lançamento em {titulo}</p>
+              ) : lancamentosFiltrados.length === 0 ? (
+                <p className="empty-text">Nenhum lançamento com esse filtro</p>
               ) : (
                 <div className="flex flex-col gap-5 overflow-y-auto pr-1" style={{ scrollbarWidth: 'thin' }}>
                   {datas.map(data => {
@@ -635,7 +687,7 @@ export default function DentistaFinanceiroPage() {
                           <div className="flex items-center gap-3">
                             {r  > 0 && <span className="text-xs text-receita">+R$ {fmt(r)}</span>}
                             {dp > 0 && <span className="text-xs text-despesa">-R$ {fmt(dp)}</span>}
-                            {!soLeitura && (confirmarLimparData !== data ? (
+                            {!soLeitura && !filtrando && (confirmarLimparData !== data ? (
                               <button
                                 onClick={() => { setConfirmarLimparData(data); setConfirmandoId(null) }}
                                 className="nav-icon hover:text-red-400 transition-colors"
