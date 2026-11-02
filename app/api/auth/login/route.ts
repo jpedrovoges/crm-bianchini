@@ -29,12 +29,13 @@ export async function POST(req: NextRequest) {
     .single()
 
   if (error || !user) {
-    return NextResponse.json({ error: 'Usuário não encontrado ou inativo' }, { status: 401 })
+    return NextResponse.json({ error: 'Usuário ou senha inválidos' }, { status: 401 })
   }
 
   const ok = await bcrypt.compare(password, user.password_hash)
   if (!ok) {
-    return NextResponse.json({ error: 'Senha incorreta' }, { status: 401 })
+    // Mesma mensagem nos dois casos: não revela quais usernames existem.
+    return NextResponse.json({ error: 'Usuário ou senha inválidos' }, { status: 401 })
   }
 
   const payload: SessionPayload = {

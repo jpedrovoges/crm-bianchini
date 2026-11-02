@@ -165,6 +165,9 @@ export default function DentistaFinanceiroPage() {
 
   // Despesas do movimento diário atribuídas a este dentista
   const [despesasResponsavel, setDespesasResponsavel] = useState<DespesaResponsavel[]>([])
+  const [editDespesa, setEditDespesa]         = useState<{ id: string; descricao: string; valor: string; data: string } | null>(null)
+  const [salvandoDespesa, setSalvandoDespesa] = useState(false)
+  const [confirmandoDespId, setConfirmandoDespId] = useState<string | null>(null)
 
   // Fechamento do mês (aviso pro dentista quando o admin/gestor já fechou)
   const [fechamento, setFechamento] = useState<FechamentoRegistro | null>(null)
@@ -279,6 +282,29 @@ export default function DentistaFinanceiroPage() {
 
   function mesAnterior() { if (mes === 0) { setMes(11); setAno(a => a - 1) } else setMes(m => m - 1) }
   function proximoMes()  { if (mes === 11) { setMes(0); setAno(a => a + 1) } else setMes(m => m + 1) }
+
+  // Despesas atribuídas: editar/excluir. Recarrega tudo (refreshKey) porque
+  // a despesa entra no saldo e no fechamento do mês calculado ao vivo.
+  async function salvarDespesa() {
+    if (!editDespesa) return
+    const valor = parseFloat(editDespesa.valor.replace(',', '.'))
+    if (!editDespesa.descricao.trim() || !Number.isFinite(valor) || valor <= 0 || !editDespesa.data) return
+    setSalvandoDespesa(true)
+    const { error } = await supabase.from('lancamentos')
+      .update({ descricao: editDespesa.descricao.trim(), valor, data: editDespesa.data })
+      .eq('id', editDespesa.id)
+    setSalvandoDespesa(false)
+    if (error) return
+    setEditDespesa(null)
+    setRefreshKey(k => k + 1)
+  }
+
+  async function excluirDespesa(id: string) {
+    await supabase.from('lancamentos').delete().eq('id', id)
+    setDespesasResponsavel(prev => prev.filter(d => d.id !== id))
+    setConfirmandoDespId(null)
+    setRefreshKey(k => k + 1)
+  }
 
   async function salvarPagamento() {
     if (!formPag.valor || !formPag.data) return
@@ -618,14 +644,71 @@ export default function DentistaFinanceiroPage() {
                     <div className="flex flex-col gap-2">
                       {despesasResponsavel.map(d => {
                         const [a, m, dia] = d.data.split('-')
+                        if (editDespesa?.id === d.id) {
+                          return (
+                            <div key={d.id} className="flex flex-col gap-2 p-2 rounded"
+                              style={{ backgroundColor: 'var(--surface-muted)', border: '1px solid var(--border-hover)' }}>
+                              <input type="text" value={editDespesa.descricao} placeholder="Descrição"
+                                onChange={e => setEditDespesa({ ...editDespesa, descricao: e.target.value })}
+                                className="form-input text-xs" />
+                              <div className="flex gap-2">
+                                <input type="number" min="0" step="0.01" value={editDespesa.valor} placeholder="Valor"
+                                  onChange={e => setEditDespesa({ ...editDespesa, valor: e.target.value })}
+                                  className="form-input text-xs flex-1 min-w-0" />
+                                <input type="date" value={editDespesa.data}
+                                  onChange={e => setEditDespesa({ ...editDespesa, data: e.target.value })}
+                                  className="form-input text-xs flex-1 min-w-0" />
+                              </div>
+                              <div className="flex gap-2">
+                                <button onClick={salvarDespesa} disabled={salvandoDespesa} className="btn-primary flex-1 py-1 text-xs">
+                                  {salvandoDespesa ? '...' : 'Salvar'}
+                                </button>
+                                <button onClick={() => setEditDespesa(null)} className="btn-secondary flex-1 py-1 text-xs">Cancelar</button>
+                              </div>
+                            </div>
+                          )
+                        }
+                        const confirmandoDesp = confirmandoDespId === d.id
                         return (
-                          <div key={d.id} className="flex items-center justify-between py-1.5 px-2 rounded"
+                          <div key={d.id} className="flex items-center justify-between gap-2 py-1.5 px-2 rounded"
                             style={{ backgroundColor: 'var(--surface-muted)' }}>
                             <div className="min-w-0 flex-1">
                               <p className="text-xs font-medium truncate" style={{ color: 'var(--text-1)' }}>{d.descricao}</p>
                               <p className="text-xs" style={{ color: 'var(--text-3)' }}>{dia}/{m}/{a}</p>
                             </div>
-                            <span className="text-sm font-medium text-despesa ml-3 flex-shrink-0">-R$ {fmt(d.valor)}</span>
+                            <span className="text-sm font-medium text-despesa ml-1 flex-shrink-0">-R$ {fmt(d.valor)}</span>
+                            {!soLeitura && !confirmandoDesp && (
+                              <>
+                                <button title="Editar"
+                                  onClick={() => { setEditDespesa({ id: d.id, descricao: d.descricao, valor: String(d.valor), data: d.data }); setConfirmandoDespId(null) }}
+                                  className="nav-icon hover:text-[var(--text-1)] transition-colors flex-shrink-0">
+                                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                    <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
+                                    <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
+                                  </svg>
+                                </button>
+                                <button title="Excluir"
+                                  onClick={() => { setConfirmandoDespId(d.id); setEditDespesa(null) }}
+                                  className="nav-icon hover:text-red-400 transition-colors flex-shrink-0">
+                                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                    <polyline points="3 6 5 6 21 6"/>
+                                    <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/>
+                                  </svg>
+                                </button>
+                              </>
+                            )}
+                            {confirmandoDesp && (
+                              <div className="flex items-center gap-1 flex-shrink-0">
+                                <button onClick={() => excluirDespesa(d.id)}
+                                  className="text-xs px-2 py-0.5 rounded font-medium"
+                                  style={{ backgroundColor: 'rgb(239 68 68 / 0.15)', color: 'rgb(248 113 113)', border: '1px solid rgb(239 68 68 / 0.3)' }}>
+                                  Excluir
+                                </button>
+                                <button onClick={() => setConfirmandoDespId(null)} className="nav-icon hover:text-[var(--text-1)] transition-colors">
+                                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
+                                </button>
+                              </div>
+                            )}
                           </div>
                         )
                       })}

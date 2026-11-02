@@ -1,8 +1,15 @@
 import { SignJWT, jwtVerify } from 'jose'
 
-const secret = () => new TextEncoder().encode(
-  process.env.JWT_SECRET ?? 'bianchini-fallback-secret-mude-em-producao'
-)
+// Sem fallback em produção: um segredo padrão conhecido (está no código)
+// permitiria forjar o cookie de sessão de qualquer usuário, inclusive admin.
+const secret = () => {
+  const s = process.env.JWT_SECRET
+  if (!s) {
+    if (process.env.NODE_ENV === 'production') throw new Error('JWT_SECRET não configurado')
+    return new TextEncoder().encode('bianchini-dev-only-secret')
+  }
+  return new TextEncoder().encode(s)
+}
 
 export type Role = 'admin' | 'gestor' | 'recepcao' | 'dentista'
 

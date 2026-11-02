@@ -18,8 +18,8 @@ type DespesaComum = {
   ativo: boolean
 }
 
-type LancRef    = { id: string; data: string; valor: number; despesa_comum_id: string }
-type LancAvulsa = { id: string; data: string; descricao: string; valor: number; forma: string }
+type LancRef    = { id: string; data: string; valor: number; despesa_comum_id: string; data_efetiva: string | null }
+type LancAvulsa = { id: string; data: string; descricao: string; valor: number; forma: string; data_efetiva: string | null }
 
 function fmt(v: number) {
   return v.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
@@ -27,6 +27,12 @@ function fmt(v: number) {
 
 function toISO(ano: number, mes: number, dia: number) {
   return `${ano}-${String(mes + 1).padStart(2, '0')}-${String(dia).padStart(2, '0')}`
+}
+
+function addDiasISO(dataISO: string, dias: number) {
+  const [a, m, d] = dataISO.split('-').map(Number)
+  const dt = new Date(a, m - 1, d + dias)
+  return toISO(dt.getFullYear(), dt.getMonth(), dt.getDate())
 }
 
 const formVazio = { descricao: '', valor: '', dia_vencimento: '', categoria_id: '' }
@@ -73,22 +79,31 @@ export default function DespesasComuns() {
   useEffect(() => {
     const inicio = toISO(ano, mes, 1)
     const fim    = toISO(ano, mes, new Date(ano, mes + 1, 0).getDate())
+    // Despesas contam pelo mês de competência (data_efetiva quando houver —
+    // ex. salário, pago no dia 05 do mês seguinte mas que pertence ao mês
+    // anterior), então a busca vai até o mês seguinte e o filtro final é
+    // feito em memória.
+    const fimBusca = addDiasISO(fim, 62)
+    const naCompetencia = (l: { data: string; data_efetiva: string | null }) => {
+      const ef = l.data_efetiva ?? l.data
+      return ef >= inicio && ef <= fim
+    }
     Promise.all([
       supabase.from('lancamentos')
-        .select('id, data, valor, despesa_comum_id')
+        .select('id, data, valor, despesa_comum_id, data_efetiva')
         .not('despesa_comum_id', 'is', null)
-        .gte('data', inicio).lte('data', fim),
+        .gte('data', inicio).lte('data', fimBusca),
       supabase.from('lancamentos')
-        .select('id, data, descricao, valor, forma')
+        .select('id, data, descricao, valor, forma, data_efetiva')
         .eq('tipo', 'despesa')
         .is('dentista_id', null)
         .is('dentista_responsavel_id', null)
         .is('despesa_comum_id', null)
-        .gte('data', inicio).lte('data', fim)
+        .gte('data', inicio).lte('data', fimBusca)
         .order('data', { ascending: false }),
     ]).then(([{ data: lanc }, { data: av }]) => {
-      if (lanc) setLancamentos(lanc as LancRef[])
-      if (av)   setAvulsas(av as LancAvulsa[])
+      if (lanc) setLancamentos((lanc as LancRef[]).filter(naCompetencia))
+      if (av)   setAvulsas((av as LancAvulsa[]).filter(naCompetencia))
     })
   }, [mes, ano])
 
@@ -141,8 +156,14 @@ export default function DespesasComuns() {
       tipo: 'despesa', descricao: d.descricao,
       valor: parseFloat(formLanc.valor), forma: formLanc.forma,
       data: formLanc.data, despesa_comum_id: d.id,
-    }).select('id, data, valor, despesa_comum_id').single()
-    if (!error && data) setLancamentos(prev => [...prev, data as LancRef])
+    }).select('id, data, valor, despesa_comum_id, data_efetiva').single()
+    if (!error && data) {
+      const l = data as LancRef
+      const ef = l.data_efetiva ?? l.data
+      const inicio = toISO(ano, mes, 1)
+      const fim    = toISO(ano, mes, new Date(ano, mes + 1, 0).getDate())
+      if (ef >= inicio && ef <= fim) setLancamentos(prev => [...prev, l])
+    }
     setLancandoId(null); setFormLanc(lancVazio); setSalvandoLanc(false)
   }
 
@@ -287,9 +308,16 @@ export default function DespesasComuns() {
                     <div key={l.id} className="movimento-item">
                       <div className="dot-despesa" />
                       <div className="flex-1 min-w-0">
-                        <p className="mov-desc">{l.descricao}</p>
+                        <p className="mov-desc">
+                          {l.descricao}
+                          {l.forma === 'Salário' && (
+                            <span className="ml-2 text-xs px-2 py-0.5 rounded-full font-medium" style={{ backgroundColor: 'var(--accent)', color: 'white' }}>
+                              Salário
+                            </span>
+                          )}
+                        </p>
                         <p className="mov-meta">
-                          {d}/{m}/{a} · {l.forma}
+                          {l.forma === 'Salário' ? `Pago em ${d}/${m}/${a}` : `${d}/${m}/${a} · ${l.forma}`}
                           {nPart > 0 && ` · R$ ${fmt(parcela)} por dentista`}
                         </p>
                       </div>

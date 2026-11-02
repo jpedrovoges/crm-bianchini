@@ -41,3 +41,6 @@ yarn-error.log*
 next-env.d.ts
 
 .vercel
+
+# Anotações locais de segurança (pendências, não versionar)
+SEGURANCA-PENDENTE.txt

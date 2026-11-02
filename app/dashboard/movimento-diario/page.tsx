@@ -8,6 +8,11 @@ import { formatarNome, formatarCpf } from '@/lib/formatarNome'
 const MESES = ['Janeiro','Fevereiro','Março','Abril','Maio','Junho','Julho','Agosto','Setembro','Outubro','Novembro','Dezembro']
 const DIAS_SEMANA = ['Dom','Seg','Ter','Qua','Qui','Sex','Sáb']
 const FORMAS = ['Pix', 'Dinheiro', 'Cartão Crédito', 'Cartão Débito', 'Convênio', 'Elo Saúde', 'Boleto']
+// "Salário" só existe pra despesa geral (sem dentista responsável). É
+// retroativo: lançado no dia 05 do mês seguinte, mas cai no rateio /
+// Despesas Comuns do mês anterior (ver competenciaSalario()).
+const FORMA_SALARIO = 'Salário'
+const FORMAS_DESPESA = [...FORMAS, FORMA_SALARIO]
 
 type Visao = 'diario' | 'mensal' | 'anual'
 
@@ -87,6 +92,14 @@ function dataEfetivaPadrao(l: { data: string; forma: string; data_efetiva: strin
   if (l.forma === 'Cartão Crédito') return addDias(l.data, 30)
   if (l.forma === 'Cartão Débito') return proximoDiaUtil(l.data)
   return l.data
+}
+
+// Competência do salário = último dia do mês anterior ao do pagamento
+// (gravado em data_efetiva, que é o que o rateio/fechamento usam).
+function competenciaSalario(dataPagamento: string): string {
+  const [a, m] = dataPagamento.split('-').map(Number)
+  const d = new Date(a, m - 1, 0)
+  return toISO(d.getFullYear(), d.getMonth(), d.getDate())
 }
 
 function fmt(v: number) {
@@ -495,7 +508,16 @@ export default function MovimentoDiarioPage() {
 
     if (editandoId) {
       const despComDentista = form.tipo === 'despesa' && !!form.dentista_responsavel_id
+      const ehSalario = form.tipo === 'despesa' && !despComDentista && form.forma === FORMA_SALARIO
+      const eraSalario = editandoLancamento?.forma === FORMA_SALARIO
+      // Virou salário → competência no mês anterior; deixou de ser salário →
+      // limpa a competência. Se já era e continua salário, não mexe (preserva
+      // eventual ajuste manual feito pelo botão de mês de referência).
+      const dataEfetivaPatch =
+        ehSalario && !eraSalario && editandoLancamento ? { data_efetiva: competenciaSalario(editandoLancamento.data) } :
+        !ehSalario && eraSalario ? { data_efetiva: null } : {}
       const payload = {
+        ...dataEfetivaPatch,
         tipo:                    form.tipo,
         descricao:               form.descricao,
         valor:                   parseFloat(form.valor),
@@ -541,14 +563,17 @@ export default function MovimentoDiarioPage() {
     const valorParc   = parseFloat((valorTotal / numParcelas).toFixed(2))
 
     const despComDentista = form.tipo === 'despesa' && !!form.dentista_responsavel_id
+    const ehSalario = form.tipo === 'despesa' && !despComDentista && form.forma === FORMA_SALARIO
 
     const inserts = Array.from({ length: numParcelas }, (_, i) => {
       const tMes     = mes + i
       const tAno     = ano + Math.floor(tMes / 12)
       const tMesNorm = tMes % 12
       const diaFinal = Math.min(diaSelecionado, new Date(tAno, tMesNorm + 1, 0).getDate())
+      const data = toISO(tAno, tMesNorm, diaFinal)
       return {
-        data:                    toISO(tAno, tMesNorm, diaFinal),
+        data,
+        data_efetiva:            ehSalario ? competenciaSalario(data) : null,
         tipo:                    form.tipo,
         descricao:               numParcelas > 1 ? `${form.descricao} (${i + 1}/${numParcelas})` : form.descricao,
         valor:                   valorParc,
@@ -712,6 +737,7 @@ export default function MovimentoDiarioPage() {
     const tagPlano =
       l.tipo === 'receita' && l.forma === 'Convênio' && !l.paciente_id ? 'Celos' :
       l.tipo === 'receita' && l.forma === 'Elo Saúde' ? 'Elo Saúde' :
+      l.tipo === 'despesa' && l.forma === FORMA_SALARIO ? 'Salário' :
       null
     return (
       <div className="rounded-lg border transition-colors flex items-center gap-3 px-3"
@@ -1251,7 +1277,9 @@ export default function MovimentoDiarioPage() {
                   onClick={() => {
                     setBuscaPaciente(''); setMostrarPacientes(false)
                     setForm(f => {
-                      const next = { ...f, tipo: t, paciente_id: '', destinatario_id: '', dentista_id: '', dentista_responsavel_id: '', nota_fiscal: false, numero_nf: '', categoria: 'procedimento' as const, observacao: '' }
+                      const formasTipo = t === 'despesa' ? FORMAS_DESPESA : FORMAS
+                      const forma = formasTipo.includes(f.forma) ? f.forma : 'Pix'
+                      const next = { ...f, tipo: t, forma, paciente_id: '', destinatario_id: '', dentista_id: '', dentista_responsavel_id: '', nota_fiscal: false, numero_nf: '', categoria: 'procedimento' as const, observacao: '' }
                       return { ...next, descricao: computeDescricao(next) }
                     })
                   }}
@@ -1270,8 +1298,16 @@ export default function MovimentoDiarioPage() {
                 <div>
                   <label className="form-label">Forma de Pagamento</label>
                   <select value={form.forma} onChange={e => setForm(f => ({ ...f, forma: e.target.value, parcelas: '1' }))} className="form-select">
-                    {FORMAS.map(f => <option key={f}>{f}</option>)}
+                    {(form.tipo === 'despesa' ? FORMAS_DESPESA : FORMAS).map(f => <option key={f}>{f}</option>)}
                   </select>
+                  {form.tipo === 'despesa' && form.forma === FORMA_SALARIO && diaSelecionado && (() => {
+                    const [ca, cm] = competenciaSalario(toISO(ano, mes, diaSelecionado)).split('-').map(Number)
+                    return (
+                      <p className="text-xs mt-1.5" style={{ color: 'var(--text-3)' }}>
+                        Salário é retroativo — entra no rateio / Despesas Comuns de {MESES[cm - 1]}/{ca}.
+                      </p>
+                    )
+                  })()}
                 </div>
               )}
               {form.forma === 'Cartão Crédito' && (

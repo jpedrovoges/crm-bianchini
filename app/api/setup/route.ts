@@ -44,7 +44,8 @@ export async function GET() {
     password_hash: hash,
     role: u.role,
     dentista_id: matchDentista(u.nomes),
-    force_password_change: false,
+    // Senha padrão é pública (está no código): obriga a troca no 1º login.
+    force_password_change: true,
     active: true,
   }))
 
